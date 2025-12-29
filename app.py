@@ -2162,8 +2162,12 @@ def main():
     crear_header_moderno()
     
     with st.sidebar:
-        st.image("LOGO.png", use_container_width=True)
-        #st.markdown('<div class="card">', unsafe_allow_html=True)
+        # DESPUÉS: carga el logo solo si existe
+        import os
+        if os.path.exists("LOGO.png"):
+            st.image("LOGO.png", use_container_width=True)
+        else:
+            st.markdown('<div style="text-align: center; font-size: 1.2em; color: #1A3B8F; margin: 1rem 0;">🎓 Preuniversitario CIMMA</div>', unsafe_allow_html=True)
         st.title("🔐 Acceso")
         
         if "user_type" not in st.session_state:
