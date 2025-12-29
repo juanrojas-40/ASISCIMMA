@@ -1605,8 +1605,8 @@ def panel_monitoreo_sistema():
 # CARGA DE DATOS CON CACHÉ INTELIGENTE Y RATE LIMITING
 # ==============================
 
-@RateLimiter(max_calls=30, period=60)  # 30 llamadas por minuto
-@cache_manager.cached(ttl=3600, dependencias=['cursos'])
+@RateLimiter(max_calls=10, period=60)  
+@cache_manager.cached(ttl=10800, dependencias=['cursos'])
 def load_courses():
     try:
         client = get_client()
@@ -1716,8 +1716,8 @@ def load_courses():
         sistema_monitoreo.registrar_error()
         return {}
 
-@RateLimiter(max_calls=20, period=60)
-@cache_manager.cached(ttl=7200)  # 2 horas para emails
+@RateLimiter(max_calls=8, period=60)
+@cache_manager.cached(ttl=10800)  
 def load_emails():
     try:
         client = get_client()
@@ -1754,8 +1754,8 @@ def load_emails():
         sistema_monitoreo.registrar_error()
         return {}, {}
 
-@RateLimiter(max_calls=15, period=60)
-@cache_manager.cached(ttl=1800)  # 30 minutos para asistencia
+@RateLimiter(max_calls=6, period=60)
+@cache_manager.cached(ttl=7200)  
 def load_all_asistencia():
     client = get_client()
     if not client:
