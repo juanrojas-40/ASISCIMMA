@@ -390,7 +390,7 @@ def verificar_limite_usuarios():
 # CONFIGURACIÓN Y CONEXIONES CON RATE LIMITING
 # ==============================
 
-@RateLimiter(max_calls=50, period=60)  # 50 llamadas por minuto
+@RateLimiter(max_calls=30, period=60)  # reducido de 50 → 30
 @st.cache_resource
 def get_client():
     try:
@@ -1604,281 +1604,304 @@ def panel_monitoreo_sistema():
 # ==============================
 # CARGA DE DATOS CON CACHÉ INTELIGENTE Y RATE LIMITING
 # ==============================
-
-@RateLimiter(max_calls=30, period=60)  # 30 llamadas por minuto
-@cache_manager.cached(ttl=3600, dependencias=['cursos'])
+# ==============================
+# CARGA DE DATOS CON CACHÉ INTELIGENTE Y RATE LIMITING
+# ==============================
+@RateLimiter(max_calls=20, period=60)  # reducido de 30 → 20
+@cache_manager.cached(ttl=7200, dependencias=['cursos'])  # aumentado de 3600 → 7200 (2h)
 def load_courses():
-    try:
-        client = get_client()
-        if not client:
-            st.error("❌ No se pudo inicializar el cliente de Google Sheets. Verifica las credenciales.")
-            return {}
-        
-        # Verificar que el sheet_id esté disponible
-        if "google" not in st.secrets or "clases_sheet_id" not in st.secrets["google"]:
-            st.error("❌ No se encontró el ID de la hoja de clases en los secrets.")
-            return {}
-            
-        sheet_id = st.secrets["google"]["clases_sheet_id"]
-        
+    import time as time_module
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            clases_sheet = client.open_by_key(sheet_id)
-        except gspread.exceptions.SpreadsheetNotFound:
-            st.error(f"❌ No se encontró la hoja con ID: {sheet_id}. Verifica el ID.")
-            return {}
-        except gspread.exceptions.APIError as e:
-            error_details = e.response.json().get('error', {}) if hasattr(e.response, 'json') else {}
-            error_message = error_details.get('message', str(e))
-            error_code = error_details.get('code', 'Unknown')
-            st.error(f"❌ Error de API al acceder a la hoja: {error_message} (Código: {error_code})")
-            if error_code == 403:
-                st.info("💡 Verifica que el service account tenga permisos de edición en la hoja.")
-            elif error_code == 429:
-                st.info("💡 Límite de cuota de API alcanzado. Intenta de nuevo más tarde.")
+            client = get_client()
+            if not client:
+                st.error("❌ No se pudo inicializar el cliente de Google Sheets. Verifica las credenciales.")
+                return {}
+            # Verificar que el sheet_id esté disponible
+            if "google" not in st.secrets or "clases_sheet_id" not in st.secrets["google"]:
+                st.error("❌ No se encontró el ID de la hoja de clases en los secrets.")
+                return {}
+            sheet_id = st.secrets["google"]["clases_sheet_id"]
+            try:
+                clases_sheet = client.open_by_key(sheet_id)
+            except gspread.exceptions.SpreadsheetNotFound:
+                st.error(f"❌ No se encontró la hoja con ID: {sheet_id}. Verifica el ID.")
+                return {}
+            except gspread.exceptions.APIError as e:
+                error_details = e.response.json().get('error', {}) if hasattr(e.response, 'json') else {}
+                error_message = error_details.get('message', str(e))
+                error_code = error_details.get('code', 'Unknown')
+                st.error(f"❌ Error de API al acceder a la hoja: {error_message} (Código: {error_code})")
+                if error_code == 403:
+                    st.info("💡 Verifica que el service account tenga permisos de edición en la hoja.")
+                elif error_code == 429:
+                    st.info("💡 Límite de cuota de API alcanzado. Reintentando...")
+                    sistema_monitoreo.registrar_error()
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        time_module.sleep(wait_time)
+                        continue
+                return {}
+            courses = {}
+            for worksheet in clases_sheet.worksheets():
+                sheet_name = worksheet.title
+                try:
+                    # Leer columnas A y C
+                    colA_raw = worksheet.col_values(1)
+                    colC_raw = worksheet.col_values(3)  # Columna C para ASIGNATURA
+                    colA = [cell.strip() for cell in colA_raw if isinstance(cell, str) and cell.strip()]
+                    colC = [cell.strip() for cell in colC_raw if isinstance(cell, str) and cell.strip()]
+                    colA_upper = [s.upper() for s in colA]
+                    colC_upper = [s.upper() for s in colC]
+                    # Buscar ASIGNATURA en columna C
+                    idx_asignatura = None
+                    asignatura = ""
+                    try:
+                        idx_asignatura = colC_upper.index("ASIGNATURA")
+                        if idx_asignatura + 1 < len(colC):
+                            asignatura = colC[idx_asignatura + 1]
+                    except ValueError:
+                        # Si no encuentra ASIGNATURA, buscar en otras posiciones
+                        for i, cell in enumerate(colC_upper):
+                            if "ASIGNATURA" in cell:
+                                idx_asignatura = i
+                                if i + 1 < len(colC):
+                                    asignatura = colC[i + 1]
+                                break
+                    # Resto del código existente para leer otras columnas...
+                    idx_prof = colA_upper.index("PROFESOR")
+                    profesor = colA[idx_prof + 1]
+                    idx_dia = colA_upper.index("DIA")
+                    dia = colA[idx_dia + 1]
+                    idx_curso = colA_upper.index("CURSO")
+                    curso_id = colA[idx_curso + 1]
+                    horario = colA[idx_curso + 2]
+                    fechas = []
+                    estudiantes = []
+                    idx_fechas = colA_upper.index("FECHAS")
+                    idx_estudiantes = colA_upper.index("NOMBRES ESTUDIANTES")
+                    for i in range(idx_fechas + 1, idx_estudiantes):
+                        if i < len(colA):
+                            fechas.append(colA[i])
+                    for i in range(idx_estudiantes + 1, len(colA)):
+                        if colA[i]:
+                            estudiantes.append(colA[i])
+                    try:
+                        colB_raw = worksheet.col_values(2)
+                        colB = [cell.strip() for cell in colB_raw if isinstance(cell, str) and cell.strip()]
+                        colB_upper = [s.upper() for s in colB]
+                        idx_sede = colB_upper.index("SEDE")
+                        sede = colB[idx_sede + 1] if (idx_sede + 1) < len(colB) else ""
+                    except (ValueError, IndexError):
+                        sede = ""
+                    if profesor and dia and curso_id and horario and estudiantes:
+                        estudiantes = sorted([e for e in estudiantes if e.strip()])
+                        courses[sheet_name] = {
+                            "profesor": profesor,
+                            "dia": dia,
+                            "horario": horario,
+                            "curso_id": curso_id,
+                            "fechas": fechas or ["Sin fechas"],
+                            "estudiantes": estudiantes,
+                            "sede": sede,
+                            "asignatura": asignatura  # Nuevo campo agregado
+                        }
+                except Exception as e:
+                    st.warning(f"⚠️ Error en hoja '{sheet_name}': {str(e)[:80]}")
+                    continue
+            return courses
+        except Exception as e:
+            if "429" in str(e):
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    st.warning(f"Cuota excedida. Reintentando en {wait_time} segundos...")
+                    time_module.sleep(wait_time)
+                    continue
+            st.error(f"❌ Error crítico al cargar cursos: {str(e)}")
             sistema_monitoreo.registrar_error()
             return {}
-        
-        courses = {}
-        for worksheet in clases_sheet.worksheets():
-            sheet_name = worksheet.title
-            try:
-                # Leer columnas A y C
-                colA_raw = worksheet.col_values(1)
-                colC_raw = worksheet.col_values(3)  # Columna C para ASIGNATURA
-                
-                colA = [cell.strip() for cell in colA_raw if isinstance(cell, str) and cell.strip()]
-                colC = [cell.strip() for cell in colC_raw if isinstance(cell, str) and cell.strip()]
-                
-                colA_upper = [s.upper() for s in colA]
-                colC_upper = [s.upper() for s in colC]
-                
-                # Buscar ASIGNATURA en columna C
-                idx_asignatura = None
-                asignatura = ""
-                try:
-                    idx_asignatura = colC_upper.index("ASIGNATURA")
-                    if idx_asignatura + 1 < len(colC):
-                        asignatura = colC[idx_asignatura + 1]
-                except ValueError:
-                    # Si no encuentra ASIGNATURA, buscar en otras posiciones
-                    for i, cell in enumerate(colC_upper):
-                        if "ASIGNATURA" in cell:
-                            idx_asignatura = i
-                            if i + 1 < len(colC):
-                                asignatura = colC[i + 1]
-                            break
-                
-                # Resto del código existente para leer otras columnas...
-                idx_prof = colA_upper.index("PROFESOR")
-                profesor = colA[idx_prof + 1]
-                idx_dia = colA_upper.index("DIA")
-                dia = colA[idx_dia + 1]
-                idx_curso = colA_upper.index("CURSO")
-                curso_id = colA[idx_curso + 1]
-                horario = colA[idx_curso + 2]
-                fechas = []
-                estudiantes = []
-                idx_fechas = colA_upper.index("FECHAS")
-                idx_estudiantes = colA_upper.index("NOMBRES ESTUDIANTES")
-                for i in range(idx_fechas + 1, idx_estudiantes):
-                    if i < len(colA):
-                        fechas.append(colA[i])
-                for i in range(idx_estudiantes + 1, len(colA)):
-                    if colA[i]:
-                        estudiantes.append(colA[i])
-                try:
-                    colB_raw = worksheet.col_values(2)
-                    colB = [cell.strip() for cell in colB_raw if isinstance(cell, str) and cell.strip()]
-                    colB_upper = [s.upper() for s in colB]
-                    idx_sede = colB_upper.index("SEDE")
-                    sede = colB[idx_sede + 1] if (idx_sede + 1) < len(colB) else ""
-                except (ValueError, IndexError):
-                    sede = ""
-                
-                if profesor and dia and curso_id and horario and estudiantes:
-                    estudiantes = sorted([e for e in estudiantes if e.strip()])
-                    courses[sheet_name] = {
-                        "profesor": profesor,
-                        "dia": dia,
-                        "horario": horario,
-                        "curso_id": curso_id,
-                        "fechas": fechas or ["Sin fechas"],
-                        "estudiantes": estudiantes,
-                        "sede": sede,
-                        "asignatura": asignatura  # Nuevo campo agregado
-                    }
-            except Exception as e:
-                st.warning(f"⚠️ Error en hoja '{sheet_name}': {str(e)[:80]}")
-                continue
-        return courses
-    except Exception as e:
-        st.error(f"❌ Error crítico al cargar cursos: {str(e)}")
-        sistema_monitoreo.registrar_error()
-        return {}
+    return {}
 
-@RateLimiter(max_calls=20, period=60)
-@cache_manager.cached(ttl=7200)  # 2 horas para emails
+@RateLimiter(max_calls=15, period=60)  # reducido de 20 → 15
+@cache_manager.cached(ttl=7200)  # aumentado de 3600 → 7200 (2h)
 def load_emails():
-    try:
-        client = get_client()
-        if not client:
-            return {}, {}
-            
-        # Verificar que el sheet_id esté disponible
-        if "google" not in st.secrets or "asistencia_sheet_id" not in st.secrets["google"]:
-            st.error("❌ No se encontró el ID de la hoja de asistencia en los secrets.")
-            return {}, {}
-            
-        asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
-        sheet_names = [ws.title for ws in asistencia_sheet.worksheets()]
-        if "MAILS" not in sheet_names:
-            return {}, {}
-        mails_sheet = asistencia_sheet.worksheet("MAILS")
-        data = mails_sheet.get_all_records()
-        if not data:
-            return {}, {}
-        emails = {}
-        nombres_apoderados = {}
-        for row in data:
-            nombre_estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
-            nombre_apoderado = str(row.get("NOMBRE APODERADO", "")).strip()
-            mail_apoderado = str(row.get("MAIL APODERADO", "")).strip()
-            if not nombre_estudiante:
-                continue
-            if mail_apoderado:
-                emails[nombre_estudiante] = mail_apoderado
-                nombres_apoderados[nombre_estudiante] = nombre_apoderado
-        return emails, nombres_apoderados
-    except Exception as e:
-        st.error(f"❌ Error cargando emails: {e}")
-        sistema_monitoreo.registrar_error()
-        return {}, {}
-
-@RateLimiter(max_calls=15, period=60)
-@cache_manager.cached(ttl=1800)  # 30 minutos para asistencia
-def load_all_asistencia():
-    client = get_client()
-    if not client:
-        return pd.DataFrame()
-        
-    # Verificar que el sheet_id esté disponible
-    if "google" not in st.secrets or "asistencia_sheet_id" not in st.secrets["google"]:
-        st.error("❌ No se encontró el ID de la hoja de asistencia en los secrets.")
-        return pd.DataFrame()
-        
-    asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
-    all_data = []
-    for worksheet in asistencia_sheet.worksheets():
-        sheet_name = worksheet.title
-        if sheet_name in ["MAILS", "MEJORAS", "PROFESORES", "Respuestas de formulario 2", "AUDIT", "FECHAS_COMPLETADAS", "CAMBIOS_CURSOS"]:
-            continue
+    import time as time_module
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            all_values = worksheet.get_all_values()
-            if not all_values or len(all_values) < 5:
-                continue
-            all_values = all_values[3:]  # Skip first 3 rows
-            headers = all_values[0]
-            headers = [str(h).strip().upper() for h in headers if str(h).strip()]  # Case-insensitive
-            
-            curso_col = None
-            fecha_col = None
-            estudiante_col = None
-            asistencia_col = None
-            hora_registro_col = None
-            informacion_col = None
-            
-            for i, h in enumerate(headers):
-                h_upper = h.upper()
-                if "CURSO" in h_upper:
-                    curso_col = i
-                elif "FECHA" in h_upper:
-                    fecha_col = i
-                elif any(term in h_upper for term in ["ESTUDIANTE", "NOMBRE ESTUDIANTE", "ALUMNO"]):
-                    estudiante_col = i
-                elif "ASISTENCIA" in h_upper:
-                    asistencia_col = i
-                elif "HORA REGISTRO" in h_upper or "HORA" in h_upper:
-                    hora_registro_col = i
-                elif any(term in h_upper for term in ["INFORMACION", "MOTIVO", "OBSERVACION"]):
-                    informacion_col = i
-            
-            if asistencia_col is None or estudiante_col is None or fecha_col is None:
-                continue
-            
-            records_loaded = 0
-            for row in all_values[1:]:  # Skip header row
-                max_index = max(
-                    curso_col,
-                    fecha_col,
-                    estudiante_col,
-                    asistencia_col,
-                    hora_registro_col or 0,
-                    informacion_col or 0
-                )
-                if len(row) <= max_index:
+            client = get_client()
+            if not client:
+                return {}, {}
+            if "google" not in st.secrets or "asistencia_sheet_id" not in st.secrets["google"]:
+                st.error("❌ No se encontró el ID de la hoja de asistencia en los secrets.")
+                return {}, {}
+            asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
+            sheet_names = [ws.title for ws in asistencia_sheet.worksheets()]
+            if "MAILS" not in sheet_names:
+                return {}, {}
+            mails_sheet = asistencia_sheet.worksheet("MAILS")
+            data = mails_sheet.get_all_records()
+            if not data:
+                return {}, {}
+            emails = {}
+            nombres_apoderados = {}
+            for row in data:
+                nombre_estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
+                nombre_apoderado = str(row.get("NOMBRE APODERADO", "")).strip()
+                mail_apoderado = str(row.get("MAIL APODERADO", "")).strip()
+                if not nombre_estudiante:
                     continue
-                
-                try:
-                    asistencia_val = int(row[asistencia_col]) if row[asistencia_col] else 0
-                except (ValueError, TypeError):
-                    asistencia_val = 0
-                
-                # Fallback: Use sheet name if curso_col is empty
-                curso = row[curso_col].strip() if curso_col is not None and len(row) > curso_col and row[curso_col] else sheet_name
-                fecha_str = row[fecha_col].strip() if len(row) > fecha_col and row[fecha_col] else ""
-                estudiante = row[estudiante_col].strip() if len(row) > estudiante_col and row[estudiante_col] else ""
-                hora_registro = row[hora_registro_col].strip() if (hora_registro_col is not None and len(row) > hora_registro_col and row[hora_registro_col]) else ""
-                informacion = row[informacion_col].strip() if (informacion_col is not None and len(row) > informacion_col and row[informacion_col]) else ""
-                
-                if estudiante and asistencia_val is not None:  # Only add if estudiante is valid
-                    all_data.append({
-                        "Curso": curso,
-                        "Fecha": fecha_str,
-                        "Estudiante": estudiante,
-                        "Asistencia": asistencia_val,
-                        "Hora Registro": hora_registro,
-                        "Información": informacion
-                    })
-                    records_loaded += 1
-            
+                if mail_apoderado:
+                    emails[nombre_estudiante] = mail_apoderado
+                    nombres_apoderados[nombre_estudiante] = nombre_apoderado
+            return emails, nombres_apoderados
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429 and attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                st.warning(f"Cuota excedida en load_emails. Reintentando en {wait_time}s...")
+                time_module.sleep(wait_time)
+                continue
+            else:
+                st.error(f"❌ Error cargando emails: {e}")
+                sistema_monitoreo.registrar_error()
+                return {}, {}
         except Exception as e:
-            continue
-    
-    df = pd.DataFrame(all_data)
-    
-    if not df.empty:
-        meses_espanol = {
-            'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04',
-            'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08',
-            'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12',
-            'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
-            'jul': '07', 'ago': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dic': '12'
-        }
-        def convertir_fecha_manual(fecha_str):
-            if not fecha_str or pd.isna(fecha_str) or fecha_str.strip() == "":
-                return pd.NaT
-            fecha_str = str(fecha_str).strip().lower()
-            try:
-                if ' de ' in fecha_str:
-                    partes = fecha_str.split(' de ')
-                    if len(partes) == 3:
-                        dia = partes[0].strip().zfill(2)
-                        mes_str = partes[1].strip()
-                        año = partes[2].strip()
-                        for mes_es, mes_num in meses_espanol.items():
-                            if mes_es in mes_str:
-                                fecha_iso = f"{año}-{mes_num}-{dia}"
-                                return pd.to_datetime(fecha_iso, format='%Y-%m-%d', errors='coerce')
-                elif '/' in fecha_str:
-                    return pd.to_datetime(fecha_str, format='%d/%m/%Y', errors='coerce')
-                elif '-' in fecha_str and len(fecha_str) == 10:
-                    return pd.to_datetime(fecha_str, format='%Y-%m-%d', errors='coerce')
-                return pd.to_datetime(fecha_str, errors='coerce')
-            except Exception:
-                return pd.NaT
-        df["Fecha"] = df["Fecha"].apply(convertir_fecha_manual)
-    
-    return df
+            st.error(f"❌ Error cargando emails: {e}")
+            sistema_monitoreo.registrar_error()
+            return {}, {}
+    return {}, {}
+
+@RateLimiter(max_calls=12, period=60)  # reducido de 15 → 12
+@cache_manager.cached(ttl=3600)  # aumentado de 1800 → 3600 (1h)
+def load_all_asistencia():
+    import time as time_module
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            client = get_client()
+            if not client:
+                return pd.DataFrame()
+            if "google" not in st.secrets or "asistencia_sheet_id" not in st.secrets["google"]:
+                st.error("❌ No se encontró el ID de la hoja de asistencia en los secrets.")
+                return pd.DataFrame()
+            asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
+            all_data = []
+            for worksheet in asistencia_sheet.worksheets():
+                sheet_name = worksheet.title
+                if sheet_name in ["MAILS", "MEJORAS", "PROFESORES", "Respuestas de formulario 2", "AUDIT", "FECHAS_COMPLETADAS", "CAMBIOS_CURSOS"]:
+                    continue
+                try:
+                    all_values = worksheet.get_all_values()
+                    if not all_values or len(all_values) < 5:
+                        continue
+                    all_values = all_values[3:]  # Skip first 3 rows
+                    headers = all_values[0]
+                    headers = [str(h).strip().upper() for h in headers if str(h).strip()]  # Case-insensitive
+                    curso_col = None
+                    fecha_col = None
+                    estudiante_col = None
+                    asistencia_col = None
+                    hora_registro_col = None
+                    informacion_col = None
+                    for i, h in enumerate(headers):
+                        h_upper = h.upper()
+                        if "CURSO" in h_upper:
+                            curso_col = i
+                        elif "FECHA" in h_upper:
+                            fecha_col = i
+                        elif any(term in h_upper for term in ["ESTUDIANTE", "NOMBRE ESTUDIANTE", "ALUMNO"]):
+                            estudiante_col = i
+                        elif "ASISTENCIA" in h_upper:
+                            asistencia_col = i
+                        elif "HORA REGISTRO" in h_upper or "HORA" in h_upper:
+                            hora_registro_col = i
+                        elif any(term in h_upper for term in ["INFORMACION", "MOTIVO", "OBSERVACION"]):
+                            informacion_col = i
+                    if asistencia_col is None or estudiante_col is None or fecha_col is None:
+                        continue
+                    records_loaded = 0
+                    for row in all_values[1:]:  # Skip header row
+                        max_index = max(
+                            curso_col,
+                            fecha_col,
+                            estudiante_col,
+                            asistencia_col,
+                            hora_registro_col or 0,
+                            informacion_col or 0
+                        )
+                        if len(row) <= max_index:
+                            continue
+                        try:
+                            asistencia_val = int(row[asistencia_col]) if row[asistencia_col] else 0
+                        except (ValueError, TypeError):
+                            asistencia_val = 0
+                        # Fallback: Use sheet name if curso_col is empty
+                        curso = row[curso_col].strip() if curso_col is not None and len(row) > curso_col and row[curso_col] else sheet_name
+                        fecha_str = row[fecha_col].strip() if len(row) > fecha_col and row[fecha_col] else ""
+                        estudiante = row[estudiante_col].strip() if len(row) > estudiante_col and row[estudiante_col] else ""
+                        hora_registro = row[hora_registro_col].strip() if (hora_registro_col is not None and len(row) > hora_registro_col and row[hora_registro_col]) else ""
+                        informacion = row[informacion_col].strip() if (informacion_col is not None and len(row) > informacion_col and row[informacion_col]) else ""
+                        if estudiante and asistencia_val is not None:  # Only add if estudiante is valid
+                            all_data.append({
+                                "Curso": curso,
+                                "Fecha": fecha_str,
+                                "Estudiante": estudiante,
+                                "Asistencia": asistencia_val,
+                                "Hora Registro": hora_registro,
+                                "Información": informacion
+                            })
+                            records_loaded += 1
+                except Exception as e:
+                    continue
+            df = pd.DataFrame(all_data)
+            if not df.empty:
+                meses_espanol = {
+                    'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04',
+                    'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08',
+                    'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12',
+                    'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
+                    'jul': '07', 'ago': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dic': '12'
+                }
+                def convertir_fecha_manual(fecha_str):
+                    if not fecha_str or pd.isna(fecha_str) or fecha_str.strip() == "":
+                        return pd.NaT
+                    fecha_str = str(fecha_str).strip().lower()
+                    try:
+                        if ' de ' in fecha_str:
+                            partes = fecha_str.split(' de ')
+                            if len(partes) == 3:
+                                dia = partes[0].strip().zfill(2)
+                                mes_str = partes[1].strip()
+                                año = partes[2].strip()
+                                for mes_es, mes_num in meses_espanol.items():
+                                    if mes_es in mes_str:
+                                        fecha_iso = f"{año}-{mes_num}-{dia}"
+                                        return pd.to_datetime(fecha_iso, format='%Y-%m-%d', errors='coerce')
+                        elif '/' in fecha_str:
+                            return pd.to_datetime(fecha_str, format='%d/%m/%Y', errors='coerce')
+                        elif '-' in fecha_str and len(fecha_str) == 10:
+                            return pd.to_datetime(fecha_str, format='%Y-%m-%d', errors='coerce')
+                        return pd.to_datetime(fecha_str, errors='coerce')
+                    except Exception:
+                        return pd.NaT
+                df["Fecha"] = df["Fecha"].apply(convertir_fecha_manual)
+            return df
+        except gspread.exceptions.APIError as e:
+            if e.response.status_code == 429 and attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                st.warning(f"Cuota excedida en load_all_asistencia. Reintentando en {wait_time}s...")
+                time_module.sleep(wait_time)
+                continue
+            else:
+                st.error(f"❌ Error API al cargar asistencia: {e}")
+                sistema_monitoreo.registrar_error()
+                return pd.DataFrame()
+        except Exception as e:
+            st.error(f"❌ Error crítico al cargar asistencia: {e}")
+            sistema_monitoreo.registrar_error()
+            return pd.DataFrame()
+    return pd.DataFrame()
 
 # ==============================
 # FUNCIÓN DE ENVÍO MASIVO MEJORADA
