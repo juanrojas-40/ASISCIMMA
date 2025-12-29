@@ -3293,7 +3293,13 @@ def main():
     crear_header_moderno()
     
     with st.sidebar:
-        st.image("LOGO.png", use_container_width=True)
+        # DESPUÉS: compatible y seguro
+        import os
+        logo_path = "LOGO.png"
+        if os.path.exists(logo_path):
+            st.image(logo_path, width=250)  # Ancho fijo o ajustado
+        else:
+            st.markdown('<div style="text-align: center; font-size: 1.5em; font-weight: bold; color: #1A3B8F; margin: 1rem 0;">🎓 Preuniversitario CIMMA</div>', unsafe_allow_html=True)
         #st.markdown('<div class="card">', unsafe_allow_html=True)
         st.title("🔐 Acceso")
         
