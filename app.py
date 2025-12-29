@@ -2188,6 +2188,7 @@ def ejecutar_cambio_curso(estudiante, curso_origen, curso_destino, fecha_efectiv
 # PANEL ADMINISTRATIVO MEJORADO
 # ==============================
 
+
 def admin_panel_mejorado():
     if 'login_time' in st.session_state and 'timeout_duration' in st.session_state:
         if time_module.time() - st.session_state['login_time'] > st.session_state['timeout_duration']:
