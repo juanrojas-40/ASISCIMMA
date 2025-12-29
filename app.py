@@ -625,7 +625,7 @@ def _load_emails_raw():
     mails_sheet = asistencia_sheet.worksheet("MAILS")
     data = mails_sheet.get_all_records()
     emails, nombres_apoderados = {}, {}
-    for row in 
+    for row in  data: 
         nombre_estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
         if nombre_estudiante:
             mail = str(row.get("MAIL APODERADO", "")).strip()
