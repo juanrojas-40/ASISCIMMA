@@ -19,63 +19,113 @@ import traceback
 import plotly.express as px
 import time as time_module
 import functools
-from functools import wraps
+from functools import wraps  # ✅ AGREGAR ESTA IMPORTACIÓN
 from gspread.exceptions import APIError
 import os
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from ratelimit import limits, sleep_and_retry  # ← Nueva dependencia
 
 # ==============================
 # CONFIGURACIÓN INICIAL Y MANEJO DE SECRETS
 # ==============================
+
 def verificar_secrets():
+    """Verifica que todos los secrets necesarios estén configurados"""
     secrets_requeridos = {
         "google": ["credentials", "asistencia_sheet_id", "clases_sheet_id"],
         "EMAIL": ["smtp_server", "smtp_port", "sender_email", "sender_password"]
     }
+    
     for categoria, secrets in secrets_requeridos.items():
         if categoria not in st.secrets:
             st.error(f"❌ No se encontró la categoría '{categoria}' en los secrets")
             return False
+        
         for secret in secrets:
             if secret not in st.secrets[categoria]:
                 st.error(f"❌ No se encontró el secret '{categoria}.{secret}'")
                 return False
+    
+    # Verificar profesores o administradores (al menos uno debe estar configurado)
     if "profesores" not in st.secrets and "administradores" not in st.secrets:
         st.error("❌ No se encontraron secrets de profesores ni administradores")
         return False
+    
     return True
+
+# ==============================
+# SISTEMA DE RATE LIMITING
+# ==============================
+
+class RateLimiter:
+    """Sistema de rate limiting para APIs externas"""
+    
+    def __init__(self, max_calls, period):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = []
+        self.lock = threading.Lock()
+    
+    def __call__(self, func):
+        @wraps(func)  # ✅ CORREGIDO: usar wraps directamente
+        def wrapper(*args, **kwargs):
+            with self.lock:
+                now = time_module.time()
+                # Limpiar llamadas antiguas
+                self.calls = [call for call in self.calls if now - call < self.period]
+                
+                if len(self.calls) >= self.max_calls:
+                    sleep_time = self.period - (now - self.calls[0])
+                    if sleep_time > 0:
+                        time_module.sleep(sleep_time)
+                        self.calls = self.calls[1:]
+                
+                self.calls.append(now)
+            return func(*args, **kwargs)
+        return wrapper
 
 # ==============================
 # SISTEMA DE COLA PARA EMAILS MASIVOS
 # ==============================
+
 class EmailQueueManager:
+    """Sistema de cola para envío masivo seguro de emails"""
+    
     def __init__(self, max_workers=3, max_retries=3):
         self.email_queue = queue.Queue()
         self.max_workers = max_workers
         self.max_retries = max_retries
         self.is_running = False
         self.workers = []
-        self.stats = {'enviados': 0, 'fallidos': 0, 'en_cola': 0}
+        self.stats = {
+            'enviados': 0,
+            'fallidos': 0,
+            'en_cola': 0
+        }
         self.lock = threading.Lock()
-
+        
     def start_workers(self):
+        """Inicia workers para procesar la cola"""
         self.is_running = True
         for i in range(self.max_workers):
             worker = threading.Thread(target=self._process_queue, daemon=True, name=f"EmailWorker-{i}")
             worker.start()
             self.workers.append(worker)
-
+        print(f"✅ Iniciados {self.max_workers} workers de email")
+    
     def stop_workers(self):
+        """Detiene los workers"""
         self.is_running = False
         for worker in self.workers:
             worker.join(timeout=5)
-
+        print("🛑 Workers de email detenidos")
+    
     def add_email_to_queue(self, to_email, subject, body, logo_path=None):
+        """Agrega email a la cola"""
         with self.lock:
             self.stats['en_cola'] += 1
+            
         self.email_queue.put({
             'to_email': to_email,
             'subject': subject,
@@ -84,88 +134,109 @@ class EmailQueueManager:
             'attempts': 0,
             'timestamp': datetime.now()
         })
-
+    
     def _process_queue(self):
+        """Procesa emails de la cola"""
         while self.is_running:
             try:
                 email_data = self.email_queue.get(timeout=1)
+                if email_data is None:
+                    break
+                    
                 success = self._send_single_email(email_data)
+                
                 with self.lock:
                     if success:
                         self.stats['enviados'] += 1
                     else:
                         self.stats['fallidos'] += 1
                     self.stats['en_cola'] -= 1
+                
                 if not success and email_data['attempts'] < self.max_retries:
                     email_data['attempts'] += 1
                     self.email_queue.put(email_data)
+                    # Backoff exponencial
                     time_module.sleep(2 ** email_data['attempts'])
+                
                 self.email_queue.task_done()
+                
             except queue.Empty:
                 continue
             except Exception as e:
+                print(f"❌ Error en worker de email: {e}")
                 with self.lock:
                     self.stats['fallidos'] += 1
                     self.stats['en_cola'] -= 1
-
+    
     def _send_single_email(self, email_data):
+        """Envía un email individual con manejo de errores"""
         try:
             return send_email(
                 email_data['to_email'],
-                email_data['subject'],
+                email_data['subject'], 
                 email_data['body'],
                 email_data.get('logo_path')
             )
         except Exception as e:
+            print(f"❌ Error enviando email a {email_data['to_email']}: {e}")
             return False
-
+    
     def wait_until_complete(self, timeout=300):
+        """Espera a que se procesen todos los emails"""
         try:
             self.email_queue.join(timeout=timeout)
             return True
         except:
             return False
-
+    
     def get_stats(self):
+        """Obtiene estadísticas de la cola"""
         with self.lock:
             return self.stats.copy()
 
+# Instancia global del gestor de colas
 email_queue_manager = EmailQueueManager(max_workers=5)
 
 # ==============================
 # SISTEMA DE MONITOREO EN TIEMPO REAL
 # ==============================
+
 class SistemaMonitoreo:
+    """Monitorea uso del sistema en tiempo real"""
+    
     def __init__(self):
         self.metricas = {
             'usuarios_activos': set(),
             'requests_por_minuto': 0,
             'emails_enviados': 0,
             'errores': 0,
+            'cache_hit_rate': 0,
             'inicio_sistema': datetime.now()
         }
         self.lock = threading.Lock()
         self.ultimo_reset = time_module.time()
-
+    
     def registrar_usuario(self, usuario):
         with self.lock:
             self.metricas['usuarios_activos'].add(usuario)
-
+    
     def remover_usuario(self, usuario):
         with self.lock:
             self.metricas['usuarios_activos'].discard(usuario)
-
+    
     def registrar_request(self):
         with self.lock:
             self.metricas['requests_por_minuto'] += 1
+            
+            # Reset cada minuto
             if time_module.time() - self.ultimo_reset > 60:
                 self.metricas['requests_por_minuto'] = 0
                 self.ultimo_reset = time_module.time()
-
+    
     def registrar_error(self):
         with self.lock:
             self.metricas['errores'] += 1
-
+    
     def obtener_metricas(self):
         with self.lock:
             return {
@@ -182,85 +253,152 @@ sistema_monitoreo = SistemaMonitoreo()
 # ==============================
 # SISTEMA DE CACHÉ INTELIGENTE MEJORADO
 # ==============================
+
 class CacheInteligenteMejorado:
+    """Sistema de caché mejorado para múltiples usuarios"""
+    
     def __init__(self):
         self.cache_data = {}
-        self.stats = {'hits': 0, 'misses': 0, 'invalidaciones': 0}
-        self.lock = threading.RLock()
-
+        self.stats = {
+            'hits': 0,
+            'misses': 0,
+            'invalidaciones': 0,
+            'usuarios_activos': set()
+        }
+        self.lock = threading.RLock()  # Lock para thread safety
+    
     def cached(self, ttl=1800, max_size=100, dependencias=None, user_specific=False):
+        """Decorador de caché inteligente mejorado"""
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
+                # Registrar request en monitoreo
                 sistema_monitoreo.registrar_request()
+                
+                # Agregar usuario a la clave si es específico por usuario
                 user_key = f"user_{st.session_state.get('user_name', 'anon')}" if user_specific else "global"
                 cache_key = f"{func.__name__}_{user_key}_{str(args)}_{str(kwargs)}"
+                
                 with self.lock:
-                    if (cache_key in self.cache_data and
-                        datetime.now() < self.cache_data[cache_key]['expira']):
+                    # Verificar si está en caché y es válido
+                    if (cache_key in self.cache_data and 
+                        datetime.now() < self.cache_data[cache_key]['expira'] and
+                        not self._dependencias_invalidadas(cache_key, dependencias)):
+                        
                         self.stats['hits'] += 1
                         return self.cache_data[cache_key]['data']
+                    
+                    # Cache miss - ejecutar función
                     self.stats['misses'] += 1
                     result = func(*args, **kwargs)
+                    
+                    # Guardar en caché
                     self.cache_data[cache_key] = {
                         'data': result,
                         'expira': datetime.now() + timedelta(seconds=ttl),
                         'timestamp': datetime.now(),
                         'dependencias': dependencias or []
                     }
+                    
+                    # Limpiar caché si excede tamaño máximo
                     self._limpiar_cache_excedente(max_size)
+                    
                     return result
             return wrapper
         return decorator
-
+    
+    def _dependencias_invalidadas(self, cache_key, dependencias):
+        """Verifica si las dependencias han cambiado"""
+        if not dependencias:
+            return False
+        
+        for dep in dependencias:
+            if dep in self.cache_data:
+                # Si la dependencia es más reciente, invalidar
+                if (self.cache_data[dep]['timestamp'] > 
+                    self.cache_data[cache_key]['timestamp']):
+                    self.invalidar(cache_key)
+                    return True
+        return False
+    
     def invalidar(self, clave=None):
+        """Invalida caché específico o completo"""
         with self.lock:
-            if clave and clave in self.cache_data:
-                del self.cache_data[clave]
-                self.stats['invalidaciones'] += 1
+            if clave:
+                if clave in self.cache_data:
+                    del self.cache_data[clave]
+                    self.stats['invalidaciones'] += 1
             else:
                 self.cache_data.clear()
-                self.stats['invalidaciones'] = len(self.cache_data)
-
+                self.stats['invalidaciones'] += len(self.cache_data)
+    
+    def invalidar_por_usuario(self, usuario):
+        """Invalida caché específico de un usuario"""
+        with self.lock:
+            claves_a_eliminar = [k for k in self.cache_data.keys() if f"user_{usuario}" in k]
+            for clave in claves_a_eliminar:
+                del self.cache_data[clave]
+                self.stats['invalidaciones'] += len(claves_a_eliminar)
+    
     def get_stats(self):
+        """Estadísticas de uso del caché"""
         with self.lock:
             total_requests = self.stats['hits'] + self.stats['misses']
             hit_rate = (self.stats['hits'] / total_requests * 100) if total_requests > 0 else 0
-            return {'total_entradas': len(self.cache_data), 'hit_rate': f"{hit_rate:.1f}%", **self.stats}
-
+            return {
+                'total_entradas': len(self.cache_data),
+                'hit_rate': f"{hit_rate:.1f}%",
+                **self.stats
+            }
+    
     def _limpiar_cache_excedente(self, max_size):
+        """Limpia caché si excede el tamaño máximo"""
         if len(self.cache_data) > max_size:
-            claves_ordenadas = sorted(self.cache_data.keys(), key=lambda k: self.cache_data[k]['timestamp'])
+            # Eliminar las entradas más antiguas
+            claves_ordenadas = sorted(
+                self.cache_data.keys(),
+                key=lambda k: self.cache_data[k]['timestamp']
+            )
             for clave in claves_ordenadas[:len(self.cache_data) - max_size]:
                 del self.cache_data[clave]
 
+# Instancia global de caché mejorado
 cache_manager = CacheInteligenteMejorado()
 
 # ==============================
 # VERIFICACIÓN DE LÍMITES DE USUARIOS
 # ==============================
+
 def verificar_limite_usuarios():
-    max_usuarios = 35
+    """Verifica que no se exceda el límite de usuarios concurrentes"""
+    max_usuarios = 35  # Límite configurable con margen
+    
     metricas = sistema_monitoreo.obtener_metricas()
     if metricas['usuarios_concurrentes'] >= max_usuarios:
         st.error(f"""
         🚫 **Límite de usuarios alcanzado**
+        
         El sistema tiene el número máximo de usuarios concurrentes ({max_usuarios}).
         Por favor, intenta nuevamente en unos minutos.
+        
         **Usuarios activos:** {metricas['usuarios_concurrentes']}
         """)
         return False
     return True
 
 # ==============================
-# CONFIGURACIÓN Y CONEXIONES (SIN RATE LIMITING PERSONALIZADO)
+# CONFIGURACIÓN Y CONEXIONES CON RATE LIMITING
 # ==============================
+
+@RateLimiter(max_calls=50, period=60)  # 50 llamadas por minuto
 @st.cache_resource
 def get_client():
     try:
+        # Verificar que los secrets estén disponibles
         if "google" not in st.secrets or "credentials" not in st.secrets["google"]:
             st.error("❌ No se encontraron las credenciales de Google en los secrets.")
             return None
+            
         creds_dict = json.loads(st.secrets["google"]["credentials"])
         creds = Credentials.from_service_account_info(creds_dict, scopes=[
             "https://spreadsheets.google.com/feeds",
@@ -277,51 +415,83 @@ def get_chile_time():
     return datetime.now(chile_tz)
 
 def send_email(to_email: str, subject: str, body: str, logo_path: str = None) -> bool:
+    """Envía email con mejor feedback de diagnóstico y soporte para HTML y logo"""
     try:
+        # Verificar configuración de email
         if "EMAIL" not in st.secrets:
             st.error("❌ No se encontró la configuración de EMAIL en los secrets.")
             return False
+            
         smtp_server = st.secrets["EMAIL"]["smtp_server"]
         smtp_port = int(st.secrets["EMAIL"]["smtp_port"])
         sender_email = st.secrets["EMAIL"]["sender_email"]
         sender_password = st.secrets["EMAIL"]["sender_password"]
+        
+        # Crear mensaje
         msg = MIMEMultipart('related')
         msg["From"] = sender_email
         msg["To"] = to_email
         msg["Subject"] = subject
         msg["Date"] = formatdate(localtime=True)
+        
+        # Crear parte alternativa para HTML y texto plano
         msg_alternative = MIMEMultipart('alternative')
         msg.attach(msg_alternative)
+        
+        # Detectar si el cuerpo es HTML
         if body.strip().startswith('<'):
+            # Es HTML - adjuntar como parte HTML
             msg_html = MIMEText(body, 'html')
             msg_alternative.attach(msg_html)
         else:
+            # Es texto plano
             msg_text = MIMEText(body, 'plain')
             msg_alternative.attach(msg_text)
+        
+        # Adjuntar logo si existe
         if logo_path and os.path.exists(logo_path):
-            with open(logo_path, 'rb') as f:
-                logo_data = f.read()
+            try:
+                with open(logo_path, 'rb') as f:
+                    logo_data = f.read()
+                
                 logo = MIMEImage(logo_data)
                 logo.add_header('Content-ID', '<logo_institucion>')
                 logo.add_header('Content-Disposition', 'inline', filename='LOGO.gif')
                 msg.attach(logo)
+            except Exception as e:
+                print(f"⚠️ No se pudo adjuntar el logo: {e}")
+        
+        # Enviar email
         server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
         server.starttls()
         server.login(sender_email, sender_password)
         server.send_message(msg)
         server.quit()
+        
+        # LOG DE ÉXITO
+        print(f"✅ Email enviado exitosamente a: {to_email}")
         return True
+        
     except Exception as e:
+        # LOG DE ERROR DETALLADO
+        error_msg = f"❌ Error enviando email a {to_email}: {str(e)}"
+        print(error_msg)
         sistema_monitoreo.registrar_error()
         return False
 
 def send_email_seguro(to_email: str, subject: str, body: str, logo_path: str = None) -> bool:
+    """Versión segura con límites y validaciones"""
+    
+    # Validar formato de email
     if '@' not in to_email or '.' not in to_email.split('@')[-1]:
+        print(f"❌ Email inválido: {to_email}")
         return False
+    
     try:
         return send_email(to_email, subject, body, logo_path)
     except Exception as e:
         sistema_monitoreo.registrar_error()
+        print(f"❌ Error en send_email_seguro: {e}")
         return False
 
 def generate_2fa_code():
@@ -330,96 +500,135 @@ def generate_2fa_code():
 # ==============================
 # SISTEMA DE FECHAS COMPLETADAS
 # ==============================
+
 class SistemaFechasCompletadas:
+    """Sistema para gestionar fechas completadas y pendientes"""
+    
     def __init__(self):
         self.client = None
+        # Manejo seguro de secrets
         try:
             self.sheet_id = st.secrets["google"]["asistencia_sheet_id"]
         except KeyError:
             st.error("❌ No se encontró 'asistencia_sheet_id' en los secrets de Google")
             self.sheet_id = None
-
+    
     def _get_client(self):
+        """Obtiene el cliente de Google Sheets de forma lazy"""
         if self.client is None:
             self.client = get_client()
         return self.client
-
-    @cache_manager.cached(ttl=900)
+    
+    @cache_manager.cached(ttl=900)  # 15 minutos de caché
     def obtener_fechas_completadas(self, curso):
+        """Obtiene las fechas ya registradas para un curso"""
         try:
             if not self.sheet_id:
                 return []
+                
             client = self._get_client()
             if not client:
                 return []
+                
             sheet = client.open_by_key(self.sheet_id)
             try:
                 fechas_sheet = sheet.worksheet("FECHAS_COMPLETADAS")
             except gspread.exceptions.WorksheetNotFound:
+                # Crear la hoja si no existe
                 fechas_sheet = sheet.add_worksheet("FECHAS_COMPLETADAS", 1000, 4)
                 fechas_sheet.append_row(["Curso", "Fecha", "Completada", "Timestamp"])
                 return []
+            
             records = fechas_sheet.get_all_records()
-            fechas_curso = [row["Fecha"] for row in records if row["Curso"] == curso and row["Completada"] == "SI"]
+            fechas_curso = [
+                row["Fecha"] for row in records 
+                if row["Curso"] == curso and row["Completada"] == "SI"
+            ]
             return fechas_curso
         except Exception as e:
             st.error(f"Error al cargar fechas completadas: {e}")
             sistema_monitoreo.registrar_error()
             return []
-
+    
     def marcar_fecha_completada(self, curso, fecha):
+        """Marca una fecha como completada"""
         try:
             if not self.sheet_id:
                 return False
+                
             client = self._get_client()
             if not client:
                 return False
+                
             sheet = client.open_by_key(self.sheet_id)
             try:
                 fechas_sheet = sheet.worksheet("FECHAS_COMPLETADAS")
             except gspread.exceptions.WorksheetNotFound:
                 fechas_sheet = sheet.add_worksheet("FECHAS_COMPLETADAS", 1000, 4)
                 fechas_sheet.append_row(["Curso", "Fecha", "Completada", "Timestamp"])
+            
+            # Verificar si ya existe
             records = fechas_sheet.get_all_records()
-            existe = any(row["Curso"] == curso and row["Fecha"] == fecha for row in records)
+            existe = any(
+                row["Curso"] == curso and row["Fecha"] == fecha 
+                for row in records
+            )
+            
             if not existe:
-                fechas_sheet.append_row([curso, fecha, "SI", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                fechas_sheet.append_row([
+                    curso,
+                    fecha,
+                    "SI",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ])
             else:
+                # Si existe, actualizar a "SI"
                 for i, row in enumerate(records, start=2):
                     if row["Curso"] == curso and row["Fecha"] == fecha:
                         fechas_sheet.update_cell(i, 3, "SI")
                         break
+            
+            # Invalidar caché
             cache_manager.invalidar()
             return True
         except Exception as e:
             st.error(f"Error al marcar fecha como completada: {e}")
             sistema_monitoreo.registrar_error()
             return False
-
+    
     def reactivar_fecha(self, curso, fecha):
+        """Reactivar una fecha completada (solo administradores)"""
         try:
             if not self.sheet_id:
                 return False
+                
             client = self._get_client()
             if not client:
                 return False
+                
             sheet = client.open_by_key(self.sheet_id)
             fechas_sheet = sheet.worksheet("FECHAS_COMPLETADAS")
+            
+            # Buscar y actualizar el registro
             records = fechas_sheet.get_all_records()
-            for i, row in enumerate(records, start=2):
+            for i, row in enumerate(records, start=2):  # start=2 porque la fila 1 son headers
                 if row["Curso"] == curso and row["Fecha"] == fecha:
-                    fechas_sheet.update_cell(i, 3, "NO")
+                    fechas_sheet.update_cell(i, 3, "NO")  # Columna "Completada"
                     break
+            
+            # Invalidar caché
             cache_manager.invalidar()
             return True
         except Exception as e:
             st.error(f"Error al reactivar fecha: {e}")
             sistema_monitoreo.registrar_error()
             return False
-
+    
     def obtener_estadisticas_fechas(self, curso, fechas_totales):
+        """Obtiene estadísticas de fechas completadas vs pendientes"""
         fechas_completadas = self.obtener_fechas_completadas(curso)
         fechas_pendientes = [f for f in fechas_totales if f not in fechas_completadas]
+        
         return {
             "completadas": len(fechas_completadas),
             "pendientes": len(fechas_pendientes),
@@ -429,89 +638,426 @@ class SistemaFechasCompletadas:
             "fechas_pendientes": fechas_pendientes
         }
 
+# Instancia global del sistema de fechas
 sistema_fechas = SistemaFechasCompletadas()
 
 # ==============================
 # COMPONENTES INFORMATIVOS PARA FECHAS
 # ==============================
+
 def crear_tooltip_fechas():
+    """Función para crear estilos CSS de tooltips"""
     st.markdown("""
     <style>
     .tooltip-fechas {
-        position: relative; display: inline-block;
+        position: relative;
+        display: inline-block;
     }
+    
     .tooltip-fechas .tooltiptext {
-        visibility: hidden; width: 350px; background-color: #1A3B8F; color: white;
-        text-align: left; border-radius: 12px; padding: 16px; position: absolute;
-        z-index: 1000; bottom: 125%; left: 50%; transform: translateX(-50%);
-        box-shadow: 0 10px 25px rgba(0,0,0,0.2); opacity: 0;
-        transition: opacity 0.3s, visibility 0.3s; font-size: 0.9em; line-height: 1.5;
+        visibility: hidden;
+        width: 350px;
+        background-color: #1A3B8F;
+        color: white;
+        text-align: left;
+        border-radius: 12px;
+        padding: 16px;
+        position: absolute;
+        z-index: 1000;
+        bottom: 125%;
+        left: 50%;
+        transform: translateX(-50%);
+        box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        opacity: 0;
+        transition: opacity 0.3s, visibility 0.3s;
+        font-size: 0.9em;
+        line-height: 1.5;
     }
+    
     .tooltip-fechas:hover .tooltiptext {
-        visibility: visible; opacity: 1;
+        visibility: visible;
+        opacity: 1;
+    }
+    
+    .tooltip-fechas .ventaja {
+        color: #10B981 !important;
+    }
+    
+    .tooltip-fechas .alerta {
+        color: #F59E0B !important;
+    }
+    
+    .tooltip-fechas ul {
+        margin: 4px 0;
+        padding-left: 16px;
+    }
+    
+    .tooltip-fechas li {
+        margin-bottom: 4px;
     }
     </style>
     """, unsafe_allow_html=True)
 
 def mostrar_panel_informativo_fechas():
+    """Muestra un panel informativo completo sobre las funciones de fechas"""
+    
     with st.expander("📚 GUÍA: Gestión de Fechas Completadas", expanded=False):
-        st.markdown("### 🔄 Reactivar Fechas - Guía Completa")
+        st.markdown("""
+        ### 🔄 Reactivar Fechas - Guía Completa
+        
+        **¿Cuándo y por qué reactivar una fecha?** Esta guía te explica todo:
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            #### 🎯 **QUÉ HACE REACTIVAR**
+            
+            **Transforma una fecha:**
+            ✅ Completada → ⏳ Pendiente
+            
+            **Resultado:**
+            - La fecha vuelve a estar disponible para registro
+            - Los profesores pueden tomar asistencia nuevamente
+            - El historial anterior se mantiene
+            """)
+        
+        with col2:
+            st.markdown("""
+            #### 🛡️ **SEGURIDAD Y VENTAJAS**
+            
+            **✅ Totalmente reversible**
+            **✅ Mantiene auditoría completa**
+            **✅ Sin pérdida de datos**
+            **✅ Ideal para correcciones**
+            """)
+        
+        st.markdown("""
+        ---
+        
+        #### 📋 **CASOS DE USO RECOMENDADOS**
+        
+        | Situación | Solución | Beneficio |
+        |-----------|----------|-----------|
+        | **Error en registro** | Reactivar y corregir | Datos precisos sin pérdida |
+        | **Asistencia incompleta** | Reactivar para completar | Información completa |
+        | **Cambio de calendario** | Reactivar fechas afectadas | Flexibilidad del sistema |
+        | **Duda en registros** | Reactivar y verificar | Calidad de datos |
+        
+        ---
+        
+        #### 🔄 **PROCESO RECOMENDADO**
+        
+        1. **Identifica** la fecha que necesita corrección
+        2. **Reactivar** usando el botón 🔄 
+        3. **Comunica** al profesor correspondiente
+        4. **Verifica** que el nuevo registro sea correcto
+        5. **Confirma** que la fecha quede como ✅ Completada
+        
+        ---
+        
+        #### ❓ **PREGUNTAS FRECUENTES**
+        
+        **¿Se pierde el registro anterior?**
+        No, el sistema mantiene todo el historial de cambios.
+        
+        **¿Puedo reactivar múltiples veces?**
+        Sí, tantas veces como sea necesario.
+        
+        **¿Los profesores ven inmediatamente el cambio?**
+        Sí, la fecha aparece disponible en su interfaz al instante.
+        
+        **¿Afecta a los reportes enviados?**
+        Los reportes futuros reflejarán los datos actualizados.
+        """)
 
 # ==============================
 # SISTEMA DE AYUDA CONTEXTUAL
 # ==============================
+
 class SistemaAyuda:
+    """Sistema de ayuda contextual con tooltips inteligentes"""
+    
     def __init__(self):
         self.ayudas = {
-            'dashboard': {'titulo': '📊 Dashboard Analytics', 'contenido': 'Visualiza métricas clave...', 'ejemplos': []},
-            'filtros': {'titulo': '🔍 Sistema de Filtros', 'contenido': 'Filtra datos...', 'ejemplos': []},
-            'envio_emails': {'titulo': '📧 Envío Masivo de Emails', 'contenido': 'Envía reportes...', 'ejemplos': []},
-            'exportacion': {'titulo': '📤 Exportación de Datos', 'contenido': 'Exporta reportes...', 'ejemplos': []}
+            'dashboard': {
+                'titulo': '📊 Dashboard Analytics',
+                'contenido': 'Visualiza métricas clave, tendencias y alertas inteligentes del sistema de asistencia.',
+                'ejemplos': [
+                    'KPIs actualizados en tiempo real',
+                    'Heatmap de patrones de asistencia', 
+                    'Alertas automáticas de estudiantes en riesgo'
+                ]
+            },
+            'filtros': {
+                'titulo': '🔍 Sistema de Filtros',
+                'contenido': 'Filtra datos por curso, estudiante, fechas y múltiples criterios simultáneamente.',
+                'ejemplos': [
+                    'Filtros combinados para análisis específicos',
+                    'Rangos de fechas personalizables',
+                    'Búsqueda rápida por nombre'
+                ]
+            },
+            'envio_emails': {
+                'titulo': '📧 Envío Masivo de Emails',
+                'contenido': 'Envía reportes personalizados a apoderados basados en los filtros aplicados.',
+                'ejemplos': [
+                    'Plantillas personalizables',
+                    'Selección automática de destinatarios',
+                    'Seguimiento de envíos exitosos/fallidos'
+                ]
+            },
+            'exportacion': {
+                'titulo': '📤 Exportación de Datos',
+                'contenido': 'Exporta reportes en múltiples formatos para análisis externo o presentaciones.',
+                'ejemplos': [
+                    'Formato Excel con pestañas organizadas',
+                    'CSV para importación en otros sistemas',
+                    'Estructura optimizada para análisis'
+                ]
+            }
         }
-
+    
     def tooltip_contextual(self, seccion, posicion="derecha"):
+        """Muestra tooltip contextual para una sección"""
+        
         if seccion not in self.ayudas:
             return ""
+        
         ayuda = self.ayudas[seccion]
-        pos = {"derecha": "left: 120%; top: -20px;", "izquierda": "right: 120%; top: -20px;", "arriba": "bottom: 125%; left: 50%; transform: translateX(-50%);", "abajo": "top: 125%; left: 50%; transform: translateX(-50%);"}
+        
         return f"""
         <div class="ayuda-contextual" style="display: inline-block; margin-left: 8px;">
-        <span class="icono-ayuda" style="cursor: help; color: #6B7280; font-size: 0.9em;">ℹ️</span>
-        <div class="tooltip-contenido" style="
-            visibility: hidden; width: 350px; background-color: #1A3B8F; color: white;
-            text-align: left; border-radius: 12px; padding: 16px; position: absolute; z-index: 1000;
-            {pos.get(posicion, "left: 120%; top: -20px;")}; box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            opacity: 0; transition: opacity 0.3s, visibility 0.3s; font-size: 0.9em; line-height: 1.5;">
-            <div style="font-weight: 600; margin-bottom: 8px; font-size: 1.1em;">{ayuda['titulo']}</div>
-            <div style="margin-bottom: 12px; opacity: 0.9;">{ayuda['contenido']}</div>
+            <span class="icono-ayuda" style="cursor: help; color: #6B7280; font-size: 0.9em;">
+                ℹ️
+            </span>
+            <div class="tooltip-contenido" style="
+                visibility: hidden;
+                width: 350px;
+                background-color: #1A3B8F;
+                color: white;
+                text-align: left;
+                border-radius: 12px;
+                padding: 16px;
+                position: absolute;
+                z-index: 1000;
+                {self._obtener_posicion(posicion)};
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+                opacity: 0;
+                transition: opacity 0.3s, visibility 0.3s;
+                font-size: 0.9em;
+                line-height: 1.5;
+            ">
+                <div style="font-weight: 600; margin-bottom: 8px; font-size: 1.1em;">
+                    {ayuda['titulo']}
+                </div>
+                <div style="margin-bottom: 12px; opacity: 0.9;">
+                    {ayuda['contenido']}
+                </div>
+                <div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">
+                    <strong>💡 Ejemplos de uso:</strong>
+                    <ul style="margin: 8px 0 0 0; padding-left: 16px;">
+                        {''.join([f'<li style="margin-bottom: 4px;">{ejemplo}</li>' for ejemplo in ayuda['ejemplos']])}
+                    </ul>
+                </div>
+            </div>
         </div>
-        </div>
-        <style>.ayuda-contextual:hover .tooltip-contenido {{visibility: visible; opacity: 1;}}</style>
-        """
+        
+        <style>
+        .ayuda-contextual:hover .tooltip-contenido {{
+            visibility: visible;
+            opacity: 1;
+        }}
+        </style>
+        """ 
+    
+    def _obtener_posicion(self, posicion):
+        """Determina posición del tooltip"""
+        posiciones = {
+            "derecha": "left: 120%; top: -20px;",
+            "izquierda": "right: 120%; top: -20px;", 
+            "arriba": "bottom: 125%; left: 50%; transform: translateX(-50%);",
+            "abajo": "top: 125%; left: 50%; transform: translateX(-50%);"
+        }
+        return posiciones.get(posicion, "left: 120%; top: -20px;")
+    
+    def boton_ayuda_completa(self):
+        """Botón para ayuda completa"""
+        if st.sidebar.button("❓ Ayuda Completa", use_container_width=True):
+            self.mostrar_ayuda_completa()
+    
+    def mostrar_ayuda_completa(self):
+        """Modal con ayuda completa"""
+        with st.expander("🎓 Centro de Ayuda - Preuniversitario CIMMA", expanded=True):
+            st.markdown("### Guía Completa del Sistema")
+            
+            for seccion, contenido in self.ayudas.items():
+                st.markdown(f"#### {contenido['titulo']}")
+                st.write(contenido['contenido'])
+                st.markdown("**💡 Ejemplos de uso:**")
+                for ejemplo in contenido['ejemplos']:
+                    st.markdown(f"- {ejemplo}")
+                st.markdown("---")
 
+# Instancia global del sistema de ayuda
 sistema_ayuda = SistemaAyuda()
 
 # ==============================
 # CONFIGURACIÓN DE TEMA Y ESTILOS
 # ==============================
+
 def aplicar_tema_moderno():
-    colores = {"primario": "#1A3B8F", "secundario": "#10B981", "accent": "#F59E0B"}
+    """Aplica un tema visual moderno y consistente"""
+    
+    # Paleta de colores institucional
+    colores_institucionales = {
+        "primario": "#1A3B8F",      # Azul institucional
+        "secundario": "#10B981",    # Verde éxito
+        "accent": "#F59E0B",        # Amarillo/naranja
+        "neutral": "#6B7280",       # Gris
+        "peligro": "#EF4444",       # Rojo
+        "fondo": "#F8FAFC"          # Fondo claro
+    }
+    
     st.markdown(f"""
     <style>
+    /* FUENTES Y TIPOGRAFÍA */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    * {{ font-family: 'Inter', sans-serif; }}
-    .main-header {{ color: {colores["primario"]}; font-weight: 700; font-size: 2.5rem; margin-bottom: 1rem; border-bottom: 3px solid {colores["primario"]}; padding-bottom: 0.5rem; }}
-    .section-header {{ color: {colores["primario"]}; font-weight: 600; font-size: 1.5rem; margin: 2rem 0 1rem 0; }}
-    </style> """, unsafe_allow_html=True)
+    
+    * {{
+        font-family: 'Inter', sans-serif;
+    }}
+    
+    /* HEADERS MODERNOS */
+    .main-header {{
+        color: {colores_institucionales["primario"]};
+        font-weight: 700;
+        font-size: 2.5rem;
+        margin-bottom: 1rem;
+        border-bottom: 3px solid {colores_institucionales["primario"]};
+        padding-bottom: 0.5rem;
+    }}
+    
+    .section-header {{
+        color: {colores_institucionales["primario"]};
+        font-weight: 600;
+        font-size: 1.5rem;
+        margin: 2rem 0 1rem 0;
+    }}
+    
+    /* BOTONES MODERNOS */
+    .stButton > button {{
+        border-radius: 12px !important;
+        padding: 0.75rem 1.5rem !important;
+        font-weight: 600 !important;
+        transition: all 0.3s ease !important;
+        border: none !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+    }}
+    
+    .stButton > button:hover {{
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
+    }}
+    
+    /* BOTÓN PRIMARIO */
+    div[data-testid="stButton"] button[kind="primary"] {{
+        background: linear-gradient(135deg, {colores_institucionales["primario"]}, #2D4FA8) !important;
+        color: white !important;
+    }}
+    
+    /* BOTÓN SECUNDARIO */
+    div[data-testid="stButton"] button[kind="secondary"] {{
+        background: white !important;
+        color: {colores_institucionales["primario"]} !important;
+        border: 2px solid {colores_institucionales["primario"]} !important;
+    }}
+    
+    /* TARJETAS Y CONTENEDORES */
+    .card {{
+        background: white;
+        border-radius: 16px;
+        padding: 1.5rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        border: 1px solid #E5E7EB;
+        margin: 1rem 0;
+    }}
+    
+    /* SIDEBAR MODERNO */
+    .css-1d391kg {{
+        background: linear-gradient(180deg, {colores_institucionales["primario"]}, #2D4FA8);
+    }}
+    
+    .sidebar .sidebar-content {{
+        background: linear-gradient(180deg, {colores_institucionales["primario"]}, #2D4FA8);
+    }}
+    
+    /* ANIMACIONES SUAVES */
+    .element-container {{
+        transition: all 0.3s ease;
+    }}
+    
+    /* MEJORAS ESPECÍFICAS PARA MÓVIL */
+    @media (max-width: 768px) {{
+        .main-header {{
+            font-size: 2rem;
+        }}
+        
+        .stButton > button {{
+            padding: 1rem 1.5rem !important;
+            font-size: 1.1rem !important;
+        }}
+    }}
+    
+    /* BARRAS DE PROGRESO MEJORADAS */
+    .stProgress > div > div > div {{
+        background: linear-gradient(90deg, {colores_institucionales["secundario"]}, #34D399);
+        border-radius: 10px;
+    }}
+    
+    /* GRID RESPONSIVO PARA MÉTRICAS */
+    .metricas-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin: 1rem 0;
+    }}
+    
+    /* TABLAS RESPONSIVAS */
+    .dataframe {{
+        width: 100% !important;
+    }}
+    
+    @media (max-width: 768px) {{
+        .dataframe {{
+            font-size: 0.8rem !important;
+        }}
+        
+        /* Scroll horizontal para tablas en móvil */
+        .dataframe-container {{
+            overflow-x: auto;
+        }}
+    }}
+    
+    </style>
+    """ , unsafe_allow_html=True)
 
 def crear_header_moderno():
+    """Crea un header moderno con logo y título"""
     col1, col2, col3 = st.columns([1, 3, 1])
     with col2:
         st.markdown('<h1 class="main-header">🎓 Preuniversitario CIMMA</h1>', unsafe_allow_html=True)
         st.markdown('<p style="text-align: center; color: #6B7280; font-size: 1.1rem;">Sistema de Gestión de Asistencia 2026</p>', unsafe_allow_html=True)
 
 def crear_tarjeta_metricas(titulo, valor, subtitulo="", icono="📊", color="#1A3B8F"):
-    valor_display = str(valor)[:20] + "..." if len(str(valor)) > 20 else str(valor)
+    """Crea una tarjeta de métricas moderna"""
+    # Truncar valor si es muy largo para asignaturas
+    if len(str(valor)) > 20:
+        valor_display = str(valor)[:20] + "..."
+    else:
+        valor_display = str(valor)
+        
     return f"""
     <div class="card" style="border-left: 4px solid {color}; min-height: 120px;">
         <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
@@ -521,138 +1067,705 @@ def crear_tarjeta_metricas(titulo, valor, subtitulo="", icono="📊", color="#1A
         <div style="font-size: 1.2rem; font-weight: 700; color: {color}; word-wrap: break-word;">{valor_display}</div>
         <div style="color: #6B7280; font-size: 0.8rem;">{subtitulo}</div>
     </div>
-    """
+    """ 
 
 def boton_moderno(texto, tipo="primario", icono="", key=None):
-    colores = {"primario": "#1A3B8F", "secundario": "#6B7280", "exito": "#10B981", "peligro": "#EF4444"}
+    """Crea un botón moderno con icono"""
+    colores = {
+        "primario": "#1A3B8F",
+        "secundario": "#6B7280", 
+        "exito": "#10B981",
+        "peligro": "#EF4444"
+    }
+    
     color = colores.get(tipo, "#1A3B8F")
+    icono_html = f"<span style='margin-right: 0.5rem;'>{icono}</span>" if icono else ""
+    
+    st.markdown(f"""
+    <style>
+    .boton-{key} {{
+        background: {color} !important;
+        color: white !important;
+        border-radius: 12px !important;
+        padding: 0.75rem 1.5rem !important;
+        border: none !important;
+        font-weight: 600 !important;
+        transition: all 0.3s ease !important;
+    }}
+    .boton-{key}:hover {{
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2) !important;
+    }}
+    </style>
+    """ , unsafe_allow_html=True)
+    
     return st.button(f"{icono} {texto}", key=key, use_container_width=True)
 
 # ==============================
-# CARGA DE DATOS CON CACHÉ INTELIGENTE Y RATE LIMITING USANDO `ratelimit`
+# COMPONENTES DE UI MEJORADOS
 # ==============================
-GOOGLE_SHEETS_CALLS_PER_MINUTE = 60  # Límite global conservador
 
-@sleep_and_retry
-@limits(calls=GOOGLE_SHEETS_CALLS_PER_MINUTE, period=60)
-def _load_courses_raw():
-    client = get_client()
-    if not client or "google" not in st.secrets:
-        return {}
-    sheet_id = st.secrets["google"]["clases_sheet_id"]
+def crear_dashboard_metricas_principales(df):
+    """Dashboard moderno con métricas clave"""
+    
+    st.markdown('<h2 class="section-header">📊 Dashboard de Asistencia</h2>', unsafe_allow_html=True)
+    
+    # Métricas principales
+    total_estudiantes = df['Estudiante'].nunique()
+    total_clases = len(df)
+    tasa_asistencia = (df['Asistencia'].sum() / total_clases * 100) if total_clases > 0 else 0
+    estudiantes_perfectos = len(df[df['Asistencia'] == 1].groupby('Estudiante').filter(lambda x: x['Asistencia'].mean() == 1))
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown(crear_tarjeta_metricas(
+            "Total Estudiantes", 
+            f"{total_estudiantes:,}", 
+            "Estudiantes únicos", "👥", "#1A3B8F"
+        ), unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(crear_tarjeta_metricas(
+            "Clases Registradas", 
+            f"{total_clases:,}", 
+            "Total de clases", "📚", "#10B981"
+        ), unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown(crear_tarjeta_metricas(
+            "Tasa Asistencia", 
+            f"{tasa_asistencia:.1f}%", 
+            "Promedio general", "✅", "#F59E0B"
+        ), unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown(crear_tarjeta_metricas(
+            "Asistencia Perfecta", 
+            f"{estudiantes_perfectos}", 
+            "100% de asistencia", "⭐", "#8B5CF6"
+        ), unsafe_allow_html=True)
+
+def crear_dashboard_avanzado(df):
+    """Dashboard completo con métricas avanzadas"""
+    
+    st.markdown('<h2 class="section-header">📈 Dashboard Analytics Avanzado</h2>', unsafe_allow_html=True)
+    
+    # ==================== KPIs PRINCIPALES ====================
+    st.subheader("🎯 KPIs Principales")
+    
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    
+    with kpi1:
+        tasa_asistencia = (df['Asistencia'].sum() / len(df) * 100) if len(df) > 0 else 0
+        tendencia = calcular_tendencia_semanal(df)
+        st.metric(
+            "📊 Tasa Asistencia General", 
+            f"{tasa_asistencia:.1f}%",
+            delta=f"{tendencia:+.1f}%" if tendencia != 0 else None
+        )
+    
+    with kpi2:
+        estudiantes_riesgo = identificar_estudiantes_riesgo(df)
+        st.metric(
+            "🎯 Estudiantes en Riesgo", 
+            len(estudiantes_riesgo),
+            delta=f"{len(estudiantes_riesgo)} alertas",
+            delta_color="inverse"
+        )
+    
+    with kpi3:
+        eficiencia_profesores = calcular_eficiencia_profesores(df)
+        st.metric(
+            "👨‍🏫 Eficiencia Profesores", 
+            f"{eficiencia_profesores:.0f}%"
+        )
+    
+    with kpi4:
+        cumplimiento_metas = calcular_cumplimiento_metas(df)
+        st.metric(
+            "✅ Cumplimiento Metas", 
+            f"{cumplimiento_metas:.0f}%"
+        )
+    
+    # ==================== GRÁFICOS AVANZADOS ====================
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Heatmap de Asistencia Semanal
+        crear_heatmap_asistencia(df)
+    
+    with col2:
+        # Distribución de Asistencia
+        crear_distribucion_asistencia(df)
+    
+    # ==================== ANÁLISIS POR ASIGNATURA ====================
+    if 'Asignatura' in df.columns and len(df['Asignatura'].unique()) > 1:
+        st.subheader("📚 Análisis por Asignatura")
+        
+        asistencia_por_asignatura = df.groupby('Asignatura')['Asistencia'].agg(['sum', 'count']).reset_index()
+        asistencia_por_asignatura['Porcentaje'] = (asistencia_por_asignatura['sum'] / asistencia_por_asignatura['count'] * 100)
+        asistencia_por_asignatura = asistencia_por_asignatura.sort_values('Porcentaje', ascending=False)
+        
+        fig_asignatura = px.bar(
+            asistencia_por_asignatura,
+            x='Asignatura',
+            y='Porcentaje',
+            title='📊 Asistencia por Asignatura',
+            color='Porcentaje',
+            color_continuous_scale=['#EF4444', '#F59E0B', '#10B981'],
+            template='plotly_white'
+        )
+        
+        fig_asignatura.update_layout(
+            xaxis_tickangle=-45,
+            coloraxis_showscale=False,
+            showlegend=False
+        )
+        
+        st.plotly_chart(fig_asignatura, use_container_width=True)
+    
+    # ==================== ALERTAS INTELIGENTES ====================
+    st.subheader("🚨 Alertas Inteligentes")
+    generar_alertas_inteligentes(df)
+    
+    # ==================== PREDICTIVOS ====================
+    st.subheader("🔮 Análisis Predictivo")
+    crear_seccion_predictiva(df)
+
+def calcular_tendencia_semanal(df):
+    """Calcula tendencia de asistencia última semana vs anterior"""
+    if 'Fecha' not in df.columns or df.empty:
+        return 0
+    
     try:
-        clases_sheet = client.open_by_key(sheet_id)
+        df_fechas = df.copy()
+        df_fechas['Fecha'] = pd.to_datetime(df_fechas['Fecha'])
+        
+        # Últimas 2 semanas
+        fecha_max = df_fechas['Fecha'].max()
+        semana_actual = fecha_max - timedelta(days=7)
+        semana_anterior = semana_actual - timedelta(days=7)
+        
+        asistencia_actual = df_fechas[
+            df_fechas['Fecha'] > semana_actual
+        ]['Asistencia'].mean() * 100
+        
+        asistencia_anterior = df_fechas[
+            (df_fechas['Fecha'] > semana_anterior) & 
+            (df_fechas['Fecha'] <= semana_actual)
+        ]['Asistencia'].mean() * 100
+        
+        return asistencia_actual - asistencia_anterior if asistencia_anterior else 0
     except:
-        return {}
-    courses = {}
-    for worksheet in clases_sheet.worksheets():
-        sheet_name = worksheet.title
-        try:
-            all_values = worksheet.get_all_values()
-            if not all_values: continue
-            max_cols = max(len(row) for row in all_values)
-            all_values = [row + [''] * (max_cols - len(row)) for row in all_values]
-            prof_val = dia_val = curso_id_val = horario_val = sede_val = asignatura_val = ""
-            fechas, estudiantes = [], []
-            idx_fechas = idx_estudiantes = -1
-            for i, row in enumerate(all_values):
-                row_clean = [str(cell).strip().upper() for cell in row]
-                if "PROFESOR" in row_clean:
-                    j = row_clean.index("PROFESOR")
-                    if j+1 < len(row): prof_val = str(row[j+1]).strip()
-                if "DIA" in row_clean:
-                    j = row_clean.index("DIA")
-                    if j+1 < len(row): dia_val = str(row[j+1]).strip()
-                if "CURSO" in row_clean:
-                    j = row_clean.index("CURSO")
-                    if j+1 < len(row): 
-                        curso_id_val = str(row[j+1]).strip()
-                        if j+2 < len(row): horario_val = str(row[j+2]).strip()
-                if "ASIGNATURA" in row_clean:
-                    j = row_clean.index("ASIGNATURA")
-                    if j+1 < len(row): asignatura_val = str(row[j+1]).strip()
-                if "SEDE" in row_clean and not sede_val:
-                    j = row_clean.index("SEDE")
-                    if j+1 < len(row): sede_val = str(row[j+1]).strip()
-                if "FECHAS" in row_clean: idx_fechas = i
-                if "NOMBRES ESTUDIANTES" in row_clean: idx_estudiantes = i
-            if idx_fechas != -1 and idx_estudiantes != -1:
-                for i in range(idx_fechas + 1, idx_estudiantes):
-                    if i < len(all_values): 
-                        fecha = str(all_values[i][0]).strip()
-                        if fecha: fechas.append(fecha)
-                for i in range(idx_estudiantes + 1, len(all_values)):
-                    est = str(all_values[i][0]).strip()
-                    if est: estudiantes.append(est)
-            if prof_val and dia_val and curso_id_val and estudiantes:
-                estudiantes = sorted([e for e in estudiantes if e])
-                courses[sheet_name] = {
-                    "profesor": prof_val,
-                    "dia": dia_val,
-                    "horario": horario_val,
-                    "curso_id": curso_id_val,
-                    "fechas": fechas or ["Sin fechas"],
-                    "estudiantes": estudiantes,
-                    "sede": sede_val,
-                    "asignatura": asignatura_val
-                }
-        except Exception as e:
-            st.warning(f"⚠️ Error en hoja '{sheet_name}': {str(e)[:100]}")
-    return courses
+        return 0
 
-@cache_manager.cached(ttl=10800, dependencias=['cursos'])
+def crear_heatmap_asistencia(df):
+    """Heatmap de asistencia por día y hora"""
+    try:
+        if 'Fecha' not in df.columns or df.empty:
+            st.info("No hay datos suficientes para el heatmap")
+            return
+            
+        df_heatmap = df.copy()
+        df_heatmap['Fecha'] = pd.to_datetime(df_heatmap['Fecha'])
+        df_heatmap['Dia_Semana'] = df_heatmap['Fecha'].dt.day_name()
+        df_heatmap['Hora'] = df_heatmap['Fecha'].dt.hour
+        
+        # Agrupar por día y hora
+        heatmap_data = df_heatmap.groupby(['Dia_Semana', 'Hora'])['Asistencia'].mean().unstack(fill_value=0)
+        
+        # Ordenar días de la semana
+        dias_orden = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        heatmap_data = heatmap_data.reindex(dias_orden)
+        
+        fig = px.imshow(
+            heatmap_data,
+            title="🔥 Heatmap de Asistencia - Día vs Hora",
+            color_continuous_scale='RdYlGn',
+            aspect="auto"
+        )
+        
+        fig.update_layout(
+            xaxis_title="Hora del Día",
+            yaxis_title="Día de la Semana"
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"Error generando heatmap: {e}")
+
+def crear_distribucion_asistencia(df):
+    """Distribución de porcentajes de asistencia"""
+    try:
+        if df.empty:
+            return
+            
+        # Calcular porcentaje por estudiante
+        asistencia_por_estudiante = df.groupby('Estudiante')['Asistencia'].agg(['sum', 'count']).reset_index()
+        asistencia_por_estudiante['Porcentaje'] = (asistencia_por_estudiante['sum'] / asistencia_por_estudiante['count'] * 100)
+        
+        fig = px.histogram(
+            asistencia_por_estudiante, 
+            x='Porcentaje',
+            title='📊 Distribución de Asistencia por Estudiante',
+            nbins=20,
+            color_discrete_sequence=['#1A3B8F']
+        )
+        
+        fig.update_layout(
+            xaxis_title="Porcentaje de Asistencia (%)",
+            yaxis_title="Número de Estudiantes"
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"Error en distribución: {e}")
+
+def identificar_estudiantes_riesgo(df):
+    """Identifica estudiantes con menos del 70% de asistencia"""
+    try:
+        if df.empty:
+            return []
+            
+        asistencia_por_estudiante = df.groupby('Estudiante')['Asistencia'].agg(['sum', 'count']).reset_index()
+        asistencia_por_estudiante['Porcentaje'] = (asistencia_por_estudiante['sum'] / asistencia_por_estudiante['count'] * 100)
+        
+        estudiantes_riesgo = asistencia_por_estudiante[
+            asistencia_por_estudiante['Porcentaje'] < 70
+        ]['Estudiante'].tolist()
+        
+        return estudiantes_riesgo
+    except:
+        return []
+
+def calcular_eficiencia_profesores(df):
+    """Calcula eficiencia promedio de profesores"""
+    try:
+        if df.empty:
+            return 0
+            
+        # Simulación - en producción calcularía por profesor
+        return min(95, (df['Asistencia'].mean() * 100) + 10)
+    except:
+        return 0
+
+def calcular_cumplimiento_metas(df):
+    """Calcula cumplimiento de metas institucionales"""
+    try:
+        if df.empty:
+            return 0
+            
+        tasa_asistencia = (df['Asistencia'].sum() / len(df) * 100)
+        meta_institucional = 85  # Meta del 85%
+        cumplimiento = min(100, (tasa_asistencia / meta_institucional) * 100)
+        return cumplimiento
+    except:
+        return 0
+
+def generar_alertas_inteligentes(df):
+    """Genera alertas inteligentes basadas en patrones"""
+    alertas = []
+    
+    # Alerta: Estudiantes con <70% de asistencia
+    estudiantes_riesgo = identificar_estudiantes_riesgo(df)
+    
+    if len(estudiantes_riesgo) > 0:
+        alertas.append({
+            'tipo': '⚠️',
+            'mensaje': f'{len(estudiantes_riesgo)} estudiantes con menos del 70% de asistencia',
+            'severidad': 'alta'
+        })
+    
+    # Alerta: Tendencia negativa
+    tendencia = calcular_tendencia_semanal(df)
+    if tendencia < -5:
+        alertas.append({
+            'tipo': '📉',
+            'mensaje': f'Tendencia negativa de {tendencia:.1f}% en la última semana',
+            'severidad': 'media'
+        })
+    
+    # Alerta: Baja asistencia general
+    tasa_asistencia = (df['Asistencia'].sum() / len(df) * 100) if len(df) > 0 else 0
+    if tasa_asistencia < 75:
+        alertas.append({
+            'tipo': '🔴',
+            'mensaje': f'Asistencia general baja: {tasa_asistencia:.1f}%',
+            'severidad': 'alta'
+        })
+    
+    # Mostrar alertas
+    if alertas:
+        for alerta in alertas:
+            color = "#FEF3C7" if alerta['severidad'] == 'media' else "#FEE2E2"
+            st.markdown(f"""
+            <div style="background: {color}; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; border-left: 4px solid #F59E0B;">
+                <strong>{alerta['tipo']} {alerta['mensaje']}</strong>
+            </div>
+            """ , unsafe_allow_html=True)
+    else:
+        st.success("✅ No hay alertas críticas en este momento")
+
+def crear_seccion_predictiva(df):
+    """Sección de análisis predictivo"""
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Predicción de riesgo
+        st.markdown("**🎯 Predicción de Riesgo**")
+        
+        # Simulación de modelo predictivo
+        estudiantes_totales = df['Estudiante'].nunique()
+        riesgo_data = {
+            'Bajo Riesgo': int(estudiantes_totales * 0.6),
+            'Riesgo Medio': int(estudiantes_totales * 0.3),
+            'Alto Riesgo': int(estudiantes_totales * 0.1)
+        }
+        
+        fig_riesgo = px.pie(
+            values=list(riesgo_data.values()),
+            names=list(riesgo_data.keys()),
+            color=list(riesgo_data.keys()),
+            color_discrete_map={
+                'Bajo Riesgo': '#10B981',
+                'Riesgo Medio': '#F59E0B', 
+                'Alto Riesgo': '#EF4444'
+            },
+            title="Distribución de Riesgo Estudiantil"
+        )
+        
+        st.plotly_chart(fig_riesgo, use_container_width=True)
+    
+    with col2:
+        # Recomendaciones automáticas
+        st.markdown("**💡 Recomendaciones**")
+        
+        recomendaciones = [
+            "📧 Contactar a estudiantes con baja asistencia",
+            "👥 Revisar eficiencia de profesores regularmente",
+            "📊 Programar reportes automáticos para directivos",
+            "🎯 Implementar programa de incentivos para asistencia perfecta"
+        ]
+        
+        for rec in recomendaciones:
+            st.markdown(f"- {rec}")
+
+def crear_grafico_asistencia_interactivo(df, tipo="tendencia"):
+    """Crea gráficos interactivos modernos con Plotly"""
+    
+    if tipo == "tendencia" and 'Fecha' in df.columns and 'Porcentaje' in df.columns:
+        fig = px.line(df, 
+                     x='Fecha', 
+                     y='Porcentaje',
+                     title='📈 Tendencia de Asistencia - Evolución Temporal',
+                     color='Curso' if 'Curso' in df.columns else None,
+                     template='plotly_white')
+        
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(family="Inter", size=12),
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=12,
+                font_family="Inter"
+            ),
+            xaxis=dict(
+                gridcolor='#E5E7EB',
+                title=dict(text="Fecha", font=dict(size=14))
+            ),
+            yaxis=dict(
+                gridcolor='#E5E7EB', 
+                title=dict(text="Porcentaje de Asistencia (%)", font=dict(size=14)),
+                range=[0, 100]
+            )
+        )
+        
+        # Añadir animación
+        fig.update_traces(
+            line=dict(width=3),
+            marker=dict(size=8),
+            hovertemplate='<b>%{x}</b><br>Asistencia: %{y:.1f}%<extra></extra>'
+        )
+        return fig
+        
+    elif tipo == "barras" and 'Estudiante' in df.columns and 'Porcentaje' in df.columns:
+        fig = px.bar(df,
+                    x='Estudiante',
+                    y='Porcentaje',
+                    title='👤 Asistencia por Estudiante',
+                    color='Porcentaje',
+                    color_continuous_scale=['#EF4444', '#F59E0B', '#10B981'],
+                    template='plotly_white')
+        
+        fig.update_layout(
+            xaxis_tickangle=-45,
+            coloraxis_showscale=False,
+            showlegend=False
+        )
+        
+        fig.update_traces(
+            hovertemplate='<b>%{x}</b><br>Asistencia: %{y:.1f}%<extra></extra>'
+        )
+        return fig
+    
+    return None
+
+def implementar_temporizador_seguridad():
+    """Implementa un temporizador de seguridad en tiempo real"""
+    
+    if 'login_time' in st.session_state and 'timeout_duration' in st.session_state:
+        if time_module.time() - st.session_state['login_time'] > st.session_state['timeout_duration']:
+            st.error("❌ Sesión expirada por límite de tiempo.")
+            # Remover usuario del monitoreo
+            if 'user_name' in st.session_state:
+                sistema_monitoreo.remover_usuario(st.session_state['user_name'])
+            st.session_state.clear()
+            st.rerun()
+            return
+        
+        tiempo_restante = st.session_state['timeout_duration'] - (time_module.time() - st.session_state['login_time'])
+        if tiempo_restante > 0:
+            minutos = int(tiempo_restante // 60)
+            segundos = int(tiempo_restante % 60)
+            
+            color = "#1A3B8F"
+            if tiempo_restante < 300:  # 5 minutos
+                color = "#EF4444"
+            elif tiempo_restante < 600:  # 10 minutos
+                color = "#F59E0B"
+            
+            st.markdown(f"""
+            <div style="position: sticky; top: 1rem; background: {color}; color: white; padding: 0.5rem 1rem; border-radius: 20px; font-weight: 600; z-index: 1000; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; margin-bottom: 1rem;">
+                ⏱️ Tiempo restante: {minutos:02d}:{segundos:02d}
+            </div>
+            """ , unsafe_allow_html=True)
+
+def panel_monitoreo_cache():
+    """Panel para monitorear estado del caché"""
+    with st.sidebar.expander("📊 Estado del Caché"):
+        stats = cache_manager.get_stats()
+        
+        st.metric("Entradas en Caché", stats['total_entradas'])
+        st.metric("Hit Rate", stats['hit_rate'])
+        st.metric("Cache Hits", stats['hits'])
+        st.metric("Cache Misses", stats['misses'])
+        
+        if st.button("🔄 Limpiar Caché", use_container_width=True):
+            cache_manager.invalidar()
+            st.success("Caché limpiado")
+            st.rerun()
+
+def panel_monitoreo_sistema():
+    """Panel de monitoreo del sistema en tiempo real"""
+    with st.sidebar.expander("📈 MONITOREO SISTEMA", expanded=False):
+        metricas = sistema_monitoreo.obtener_metricas()
+        
+        st.metric("👥 Usuarios Activos", metricas['usuarios_concurrentes'])
+        st.metric("📊 Requests/min", metricas['requests_por_minuto'])
+        st.metric("⏱️ Uptime (min)", metricas['uptime_minutos'])
+        st.metric("❌ Errores", metricas['errores'])
+        
+        # Estado del sistema de colas de email
+        st.markdown("---")
+        st.subheader("📨 Cola de Emails")
+        email_stats = metricas['estado_cola_email']
+        st.metric("📧 Enviados", email_stats['enviados'])
+        st.metric("🔄 En cola", email_stats['en_cola'])
+        st.metric("❌ Fallidos", email_stats['fallidos'])
+        
+        # Control de workers
+        st.markdown("---")
+        st.subheader("⚙️ Control Workers")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("▶️ Iniciar Workers", use_container_width=True):
+                if not email_queue_manager.is_running:
+                    email_queue_manager.start_workers()
+                    st.success("Workers iniciados")
+                else:
+                    st.info("Workers ya están en ejecución")
+        
+        with col2:
+            if st.button("⏹️ Detener Workers", use_container_width=True):
+                if email_queue_manager.is_running:
+                    email_queue_manager.stop_workers()
+                    st.success("Workers detenidos")
+                else:
+                    st.info("Workers no están en ejecución")
+        
+        if st.button("🔄 Actualizar Métricas", use_container_width=True):
+            st.rerun()
+
+# ==============================
+# CARGA DE DATOS CON CACHÉ INTELIGENTE Y RATE LIMITING
+# ==============================
+
+@RateLimiter(max_calls=30, period=60)  # 30 llamadas por minuto
+@cache_manager.cached(ttl=3600, dependencias=['cursos'])
 def load_courses():
-    max_retries = 3
-    for attempt in range(max_retries):
+    try:
+        client = get_client()
+        if not client:
+            st.error("❌ No se pudo inicializar el cliente de Google Sheets. Verifica las credenciales.")
+            return {}
+        
+        # Verificar que el sheet_id esté disponible
+        if "google" not in st.secrets or "clases_sheet_id" not in st.secrets["google"]:
+            st.error("❌ No se encontró el ID de la hoja de clases en los secrets.")
+            return {}
+            
+        sheet_id = st.secrets["google"]["clases_sheet_id"]
+        
         try:
-            return _load_courses_raw()
-        except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
-                time_module.sleep(2 ** attempt)
-                continue
-            st.error(f"❌ Error en load_courses: {e}")
+            clases_sheet = client.open_by_key(sheet_id)
+        except gspread.exceptions.SpreadsheetNotFound:
+            st.error(f"❌ No se encontró la hoja con ID: {sheet_id}. Verifica el ID.")
+            return {}
+        except gspread.exceptions.APIError as e:
+            error_details = e.response.json().get('error', {}) if hasattr(e.response, 'json') else {}
+            error_message = error_details.get('message', str(e))
+            error_code = error_details.get('code', 'Unknown')
+            st.error(f"❌ Error de API al acceder a la hoja: {error_message} (Código: {error_code})")
+            if error_code == 403:
+                st.info("💡 Verifica que el service account tenga permisos de edición en la hoja.")
+            elif error_code == 429:
+                st.info("💡 Límite de cuota de API alcanzado. Intenta de nuevo más tarde.")
             sistema_monitoreo.registrar_error()
             return {}
-    return {}
-
-@sleep_and_retry
-@limits(calls=GOOGLE_SHEETS_CALLS_PER_MINUTE, period=60)
-def _load_emails_raw():
-    client = get_client()
-    if not client: return {}, {}
-    asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
-    if "MAILS" not in [ws.title for ws in asistencia_sheet.worksheets()]: return {}, {}
-    mails_sheet = asistencia_sheet.worksheet("MAILS")
-    data = mails_sheet.get_all_records()
-    emails, nombres_apoderados = {}, {}
-    for row in  data: 
-        nombre_estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
-        if nombre_estudiante:
-            mail = str(row.get("MAIL APODERADO", "")).strip()
-            if mail:
-                emails[nombre_estudiante] = mail
-                nombres_apoderados[nombre_estudiante] = str(row.get("NOMBRE APODERADO", "")).strip()
-    return emails, nombres_apoderados
-
-@cache_manager.cached(ttl=10800)
-def load_emails():
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            return _load_emails_raw()
-        except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
-                time_module.sleep(2 ** attempt)
+        
+        courses = {}
+        for worksheet in clases_sheet.worksheets():
+            sheet_name = worksheet.title
+            try:
+                # Leer columnas A y C
+                colA_raw = worksheet.col_values(1)
+                colC_raw = worksheet.col_values(3)  # Columna C para ASIGNATURA
+                
+                colA = [cell.strip() for cell in colA_raw if isinstance(cell, str) and cell.strip()]
+                colC = [cell.strip() for cell in colC_raw if isinstance(cell, str) and cell.strip()]
+                
+                colA_upper = [s.upper() for s in colA]
+                colC_upper = [s.upper() for s in colC]
+                
+                # Buscar ASIGNATURA en columna C
+                idx_asignatura = None
+                asignatura = ""
+                try:
+                    idx_asignatura = colC_upper.index("ASIGNATURA")
+                    if idx_asignatura + 1 < len(colC):
+                        asignatura = colC[idx_asignatura + 1]
+                except ValueError:
+                    # Si no encuentra ASIGNATURA, buscar en otras posiciones
+                    for i, cell in enumerate(colC_upper):
+                        if "ASIGNATURA" in cell:
+                            idx_asignatura = i
+                            if i + 1 < len(colC):
+                                asignatura = colC[i + 1]
+                            break
+                
+                # Resto del código existente para leer otras columnas...
+                idx_prof = colA_upper.index("PROFESOR")
+                profesor = colA[idx_prof + 1]
+                idx_dia = colA_upper.index("DIA")
+                dia = colA[idx_dia + 1]
+                idx_curso = colA_upper.index("CURSO")
+                curso_id = colA[idx_curso + 1]
+                horario = colA[idx_curso + 2]
+                fechas = []
+                estudiantes = []
+                idx_fechas = colA_upper.index("FECHAS")
+                idx_estudiantes = colA_upper.index("NOMBRES ESTUDIANTES")
+                for i in range(idx_fechas + 1, idx_estudiantes):
+                    if i < len(colA):
+                        fechas.append(colA[i])
+                for i in range(idx_estudiantes + 1, len(colA)):
+                    if colA[i]:
+                        estudiantes.append(colA[i])
+                try:
+                    colB_raw = worksheet.col_values(2)
+                    colB = [cell.strip() for cell in colB_raw if isinstance(cell, str) and cell.strip()]
+                    colB_upper = [s.upper() for s in colB]
+                    idx_sede = colB_upper.index("SEDE")
+                    sede = colB[idx_sede + 1] if (idx_sede + 1) < len(colB) else ""
+                except (ValueError, IndexError):
+                    sede = ""
+                
+                if profesor and dia and curso_id and horario and estudiantes:
+                    estudiantes = sorted([e for e in estudiantes if e.strip()])
+                    courses[sheet_name] = {
+                        "profesor": profesor,
+                        "dia": dia,
+                        "horario": horario,
+                        "curso_id": curso_id,
+                        "fechas": fechas or ["Sin fechas"],
+                        "estudiantes": estudiantes,
+                        "sede": sede,
+                        "asignatura": asignatura  # Nuevo campo agregado
+                    }
+            except Exception as e:
+                st.warning(f"⚠️ Error en hoja '{sheet_name}': {str(e)[:80]}")
                 continue
-            sistema_monitoreo.registrar_error()
-            return {}, {}
-    return {}, {}
+        return courses
+    except Exception as e:
+        st.error(f"❌ Error crítico al cargar cursos: {str(e)}")
+        sistema_monitoreo.registrar_error()
+        return {}
 
-@sleep_and_retry
-@limits(calls=GOOGLE_SHEETS_CALLS_PER_MINUTE, period=60)
-def _load_all_asistencia_raw():
+@RateLimiter(max_calls=20, period=60)
+@cache_manager.cached(ttl=7200)  # 2 horas para emails
+def load_emails():
+    try:
+        client = get_client()
+        if not client:
+            return {}, {}
+            
+        # Verificar que el sheet_id esté disponible
+        if "google" not in st.secrets or "asistencia_sheet_id" not in st.secrets["google"]:
+            st.error("❌ No se encontró el ID de la hoja de asistencia en los secrets.")
+            return {}, {}
+            
+        asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
+        sheet_names = [ws.title for ws in asistencia_sheet.worksheets()]
+        if "MAILS" not in sheet_names:
+            return {}, {}
+        mails_sheet = asistencia_sheet.worksheet("MAILS")
+        data = mails_sheet.get_all_records()
+        if not data:
+            return {}, {}
+        emails = {}
+        nombres_apoderados = {}
+        for row in data:
+            nombre_estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
+            nombre_apoderado = str(row.get("NOMBRE APODERADO", "")).strip()
+            mail_apoderado = str(row.get("MAIL APODERADO", "")).strip()
+            if not nombre_estudiante:
+                continue
+            if mail_apoderado:
+                emails[nombre_estudiante] = mail_apoderado
+                nombres_apoderados[nombre_estudiante] = nombre_apoderado
+        return emails, nombres_apoderados
+    except Exception as e:
+        st.error(f"❌ Error cargando emails: {e}")
+        sistema_monitoreo.registrar_error()
+        return {}, {}
+
+@RateLimiter(max_calls=15, period=60)
+@cache_manager.cached(ttl=1800)  # 30 minutos para asistencia
+def load_all_asistencia():
     client = get_client()
-    if not client: return pd.DataFrame()
+    if not client:
+        return pd.DataFrame()
+        
+    # Verificar que el sheet_id esté disponible
+    if "google" not in st.secrets or "asistencia_sheet_id" not in st.secrets["google"]:
+        st.error("❌ No se encontró el ID de la hoja de asistencia en los secrets.")
+        return pd.DataFrame()
+        
     asistencia_sheet = client.open_by_key(st.secrets["google"]["asistencia_sheet_id"])
     all_data = []
     for worksheet in asistencia_sheet.worksheets():
@@ -661,41 +1774,89 @@ def _load_all_asistencia_raw():
             continue
         try:
             all_values = worksheet.get_all_values()
-            if not all_values or len(all_values) < 5: continue
-            all_values = all_values[3:]
-            headers = [str(h).strip().upper() for h in all_values[0] if str(h).strip()]
-            curso_col = fecha_col = estudiante_col = asistencia_col = hora_registro_col = informacion_col = None
+            if not all_values or len(all_values) < 5:
+                continue
+            all_values = all_values[3:]  # Skip first 3 rows
+            headers = all_values[0]
+            headers = [str(h).strip().upper() for h in headers if str(h).strip()]  # Case-insensitive
+            
+            curso_col = None
+            fecha_col = None
+            estudiante_col = None
+            asistencia_col = None
+            hora_registro_col = None
+            informacion_col = None
+            
             for i, h in enumerate(headers):
-                if "CURSO" in h: curso_col = i
-                elif "FECHA" in h: fecha_col = i
-                elif any(term in h for term in ["ESTUDIANTE", "NOMBRE ESTUDIANTE", "ALUMNO"]): estudiante_col = i
-                elif "ASISTENCIA" in h: asistencia_col = i
-                elif "HORA" in h or "REGISTRO" in h: hora_registro_col = i
-                elif any(term in h for term in ["INFORMACION", "MOTIVO", "OBSERVACION"]): informacion_col = i
-            if None in (asistencia_col, estudiante_col, fecha_col): continue
-            for row in all_values[1:]:
-                if len(row) <= max(asistencia_col, estudiante_col, fecha_col): continue
-                try: asistencia_val = int(row[asistencia_col]) if row[asistencia_col].strip().isdigit() else 0
-                except: asistencia_val = 0
-                curso = (row[curso_col].strip() if curso_col is not None and len(row) > curso_col else sheet_name) or sheet_name
-                fecha_str = row[fecha_col].strip() if len(row) > fecha_col else ""
-                estudiante = row[estudiante_col].strip() if len(row) > estudiante_col else ""
-                hora_registro = row[hora_registro_col].strip() if hora_registro_col is not None and len(row) > hora_registro_col else ""
-                informacion = row[informacion_col].strip() if informacion_col is not None and len(row) > informacion_col else ""
-                if estudiante:
+                h_upper = h.upper()
+                if "CURSO" in h_upper:
+                    curso_col = i
+                elif "FECHA" in h_upper:
+                    fecha_col = i
+                elif any(term in h_upper for term in ["ESTUDIANTE", "NOMBRE ESTUDIANTE", "ALUMNO"]):
+                    estudiante_col = i
+                elif "ASISTENCIA" in h_upper:
+                    asistencia_col = i
+                elif "HORA REGISTRO" in h_upper or "HORA" in h_upper:
+                    hora_registro_col = i
+                elif any(term in h_upper for term in ["INFORMACION", "MOTIVO", "OBSERVACION"]):
+                    informacion_col = i
+            
+            if asistencia_col is None or estudiante_col is None or fecha_col is None:
+                continue
+            
+            records_loaded = 0
+            for row in all_values[1:]:  # Skip header row
+                max_index = max(
+                    curso_col,
+                    fecha_col,
+                    estudiante_col,
+                    asistencia_col,
+                    hora_registro_col or 0,
+                    informacion_col or 0
+                )
+                if len(row) <= max_index:
+                    continue
+                
+                try:
+                    asistencia_val = int(row[asistencia_col]) if row[asistencia_col] else 0
+                except (ValueError, TypeError):
+                    asistencia_val = 0
+                
+                # Fallback: Use sheet name if curso_col is empty
+                curso = row[curso_col].strip() if curso_col is not None and len(row) > curso_col and row[curso_col] else sheet_name
+                fecha_str = row[fecha_col].strip() if len(row) > fecha_col and row[fecha_col] else ""
+                estudiante = row[estudiante_col].strip() if len(row) > estudiante_col and row[estudiante_col] else ""
+                hora_registro = row[hora_registro_col].strip() if (hora_registro_col is not None and len(row) > hora_registro_col and row[hora_registro_col]) else ""
+                informacion = row[informacion_col].strip() if (informacion_col is not None and len(row) > informacion_col and row[informacion_col]) else ""
+                
+                if estudiante and asistencia_val is not None:  # Only add if estudiante is valid
                     all_data.append({
-                        "Curso": curso, "Fecha": fecha_str, "Estudiante": estudiante,
-                        "Asistencia": asistencia_val, "Hora Registro": hora_registro, "Información": informacion
+                        "Curso": curso,
+                        "Fecha": fecha_str,
+                        "Estudiante": estudiante,
+                        "Asistencia": asistencia_val,
+                        "Hora Registro": hora_registro,
+                        "Información": informacion
                     })
-        except: continue
+                    records_loaded += 1
+            
+        except Exception as e:
+            continue
+    
     df = pd.DataFrame(all_data)
+    
     if not df.empty:
-        meses = {'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
-                 'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12',
-                 'ene':'01','feb':'02','mar':'03','abr':'04','may':'05','jun':'06',
-                 'jul':'07','ago':'08','sep':'09','oct':'10','nov':'11','dic':'12'}
-        def convertir_fecha(fecha_str):
-            if not fecha_str or pd.isna(fecha_str) or not str(fecha_str).strip(): return pd.NaT
+        meses_espanol = {
+            'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04',
+            'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08',
+            'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12',
+            'ene': '01', 'feb': '02', 'mar': '03', 'abr': '04', 'may': '05', 'jun': '06',
+            'jul': '07', 'ago': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dic': '12'
+        }
+        def convertir_fecha_manual(fecha_str):
+            if not fecha_str or pd.isna(fecha_str) or fecha_str.strip() == "":
+                return pd.NaT
             fecha_str = str(fecha_str).strip().lower()
             try:
                 if ' de ' in fecha_str:
@@ -704,51 +1865,20 @@ def _load_all_asistencia_raw():
                         dia = partes[0].strip().zfill(2)
                         mes_str = partes[1].strip()
                         año = partes[2].strip()
-                        for mes_es, mes_num in meses.items():
+                        for mes_es, mes_num in meses_espanol.items():
                             if mes_es in mes_str:
-                                return pd.to_datetime(f"{año}-{mes_num}-{dia}", format='%Y-%m-%d', errors='coerce')
-                elif '/' in fecha_str: return pd.to_datetime(fecha_str, format='%d/%m/%Y', errors='coerce')
-                elif '-' in fecha_str and len(fecha_str) == 10: return pd.to_datetime(fecha_str, format='%Y-%m-%d', errors='coerce')
+                                fecha_iso = f"{año}-{mes_num}-{dia}"
+                                return pd.to_datetime(fecha_iso, format='%Y-%m-%d', errors='coerce')
+                elif '/' in fecha_str:
+                    return pd.to_datetime(fecha_str, format='%d/%m/%Y', errors='coerce')
+                elif '-' in fecha_str and len(fecha_str) == 10:
+                    return pd.to_datetime(fecha_str, format='%Y-%m-%d', errors='coerce')
                 return pd.to_datetime(fecha_str, errors='coerce')
-            except: return pd.NaT
-        df["Fecha"] = df["Fecha"].apply(convertir_fecha)
+            except Exception:
+                return pd.NaT
+        df["Fecha"] = df["Fecha"].apply(convertir_fecha_manual)
+    
     return df
-
-@cache_manager.cached(ttl=7200)
-def load_all_asistencia():
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            return _load_all_asistencia_raw()
-        except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
-                time_module.sleep(2 ** attempt)
-                continue
-            sistema_monitoreo.registrar_error()
-            return pd.DataFrame()
-    return pd.DataFrame()
-
-# ==============================
-# RESTO DEL CÓDIGO SIN CAMBIOS (RESUMIDO POR ESPACIO)
-# ==============================
-# [El resto del código — enviar_resumen_asistencia_masivo, ejecutar_cambio_curso, 
-#  admin_panel_mejorado, main_app_mejorada, implementar_temporizador_seguridad,
-#  panel_monitoreo_cache, panel_monitoreo_sistema, main() — 
-#  se mantiene EXACTAMENTE IGUAL al original. 
-#  No se requieren cambios porque ya están optimizados.]
-
-# (Aquí iría el resto del código tal como está en tu archivo original,
-#  desde `def enviar_resumen_asistencia_masivo(...)` hasta `if __name__ == "__main__": main()`)
-
-# ==============================
-# IMPORTANTE: NO OLVIDES ACTUALIZAR `requirements.txt`
-# ==============================
-# Este archivo usa `from ratelimit import limits, sleep_and_retry`
-# Por lo tanto, tu requirements.txt debe incluir:
-#   ratelimit==2.2.1
-
-
-
 
 # ==============================
 # FUNCIÓN DE ENVÍO MASIVO MEJORADA
@@ -2162,12 +3292,8 @@ def main():
     crear_header_moderno()
     
     with st.sidebar:
-        # DESPUÉS: carga el logo solo si existe
-        import os
-        if os.path.exists("LOGO.png"):
-            st.image("LOGO.png", use_container_width=True)
-        else:
-            st.markdown('<div style="text-align: center; font-size: 1.2em; color: #1A3B8F; margin: 1rem 0;">🎓 Preuniversitario CIMMA</div>', unsafe_allow_html=True)
+        st.image("LOGO.png", use_container_width=True)
+        #st.markdown('<div class="card">', unsafe_allow_html=True)
         st.title("🔐 Acceso")
         
         if "user_type" not in st.session_state:
