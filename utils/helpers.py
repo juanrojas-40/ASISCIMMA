@@ -1,43 +1,37 @@
+# utils/helpers.py
 import streamlit as st
-from datetime import datetime
+import pandas as pd
+import io
+from typing import Dict, List
+import json
 
-def setup_page(title: str = None, icon: str = None):
-    """Configuración básica de la página"""
-    if title:
-        st.set_page_config(
-            page_title=title,
-            page_icon=icon or "🎓",
-            layout="wide",
-            initial_sidebar_state="expanded"
-        )
+def export_to_excel(df: pd.DataFrame, filename: str = "reporte"):
+    """Exporta DataFrame a Excel en memoria"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Reporte', index=False)
+    return output.getvalue()
 
-def display_footer():
-    """Muestra el footer de la aplicación"""
-    st.markdown("---")
-    st.markdown(
-        """
-        <div style='text-align: center; color: #666; font-size: 0.9rem;'>
-        <p>© 2026 Preuniversitario CIMMA | Sistema de Asistencia v1.0</p>
-        <p style='font-size: 0.8rem;'>🚀 Desarrollado con Streamlit | 🔒 Credenciales seguras en la nube</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-def get_chile_time():
-    """Obtiene la hora actual de Chile"""
-    from pytz import timezone
-    chile_tz = timezone("America/Santiago")
-    return datetime.now(chile_tz)
-
-def format_date(date_obj, format_str="%d/%m/%Y"):
-    """Formatea una fecha"""
-    if isinstance(date_obj, str):
-        return date_obj
-    return date_obj.strftime(format_str)
-
-def validate_email(email: str) -> bool:
-    """Valida formato de email básico"""
-    import re
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email))
+def get_sede_from_username(username: str) -> str:
+    """Obtiene la sede del usuario desde secrets"""
+    try:
+        if "usuarios_sede" in st.secrets:
+            for user_key, sede in st.secrets["usuarios_sede"].items():
+                if user_key.lower() == username.lower():
+                    return sede.upper()
+        
+        # Fallback al mapeo interno
+        username_lower = username.lower()
+        if 'sp' in username_lower:
+            return 'SAN PEDRO'
+        elif 'chillan' in username_lower:
+            return 'CHILLAN'
+        elif 'valdivia' in username_lower or 'pdv' in username_lower:
+            return 'PEDRO DE VALDIVIA'
+        elif 'conce' in username_lower:
+            return 'CONCEPCIÓN'
+        
+        return 'TODAS'
+        
+    except:
+        return 'TODAS'

@@ -7,7 +7,7 @@ class AuthManager:
     def __init__(self):
         self.role_mapping = {
             "👨‍🏫 Profesor": "profesor",
-            "👩‍💼 Secretaria": "secretaria", 
+            "👩‍💼 Equipo Sede": "Equipo Sede", 
             "👑 Administrador": "admin"
         }
     
