@@ -1,11 +1,19 @@
 import streamlit as st
+
+# ESTO DEBE SER EL PRIMER COMANDO DE STREAMLIT
+st.set_page_config(
+    page_title="Sistema de Asistencia CIMMA",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Ahora importamos el resto de dependencias
 import pandas as pd
 from datetime import datetime
 import sys
 import os
 import io
-# En app.py, la importación debería ser:
-from utils.email_sender import EmailManager
 
 # Agregar la carpeta utils al path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
@@ -20,49 +28,41 @@ except ImportError as e:
     st.error(f"❌ Error importando módulos: {e}")
     st.info("💡 Asegúrate de que la carpeta 'utils' existe y tiene los archivos correctos")
 
+# CSS personalizado - Asegurar que venga después de set_page_config
+st.markdown("""
+<style>
+.main-header {
+    color: #1A3B8F;
+    font-size: 2.5rem;
+    text-align: center;
+    margin-bottom: 1rem;
+}
+.card {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    margin: 1rem 0;
+}
+.stProgress > div > div > div > div {
+    background-color: #1A3B8F;
+}
+.metric-card {
+    background: linear-gradient(135deg, #1A3B8F 0%, #2D4FA8 100%);
+    color: white;
+    padding: 1rem;
+    border-radius: 10px;
+    text-align: center;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # Configuración de página
 def main():
-    # Configurar página
-    st.set_page_config(
-        page_title="Sistema de Asistencia CIMMA",
-        page_icon="🎓",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
     # Inicializar managers
     auth_manager = AuthManager()
     sheets_manager = GoogleSheetsManager()
     email_manager = EmailManager()
-    
-    # CSS personalizado
-    st.markdown("""
-    <style>
-    .main-header {
-        color: #1A3B8F;
-        font-size: 2.5rem;
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    .card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin: 1rem 0;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #1A3B8F;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #1A3B8F 0%, #2D4FA8 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        text-align: center;
-    }
-    </style>
-    """, unsafe_allow_html=True)
     
     # Verificar si los secrets están configurados
     if not auth_manager.check_secrets():
