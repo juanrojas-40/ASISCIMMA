@@ -8,26 +8,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Ahora importamos el resto de dependencias
-import pandas as pd
-from datetime import datetime
-import sys
-import os
-import io
-
-# Agregar la carpeta utils al path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
-
-# Importar módulos propios
-try:
-    from utils.google_sheets import GoogleSheetsManager
-    from utils.email_sender import EmailManager
-    from utils.auth import AuthManager
-    from utils.helpers import setup_page, display_footer
-except ImportError as e:
-    st.error(f"❌ Error importando módulos: {e}")
-    st.info("💡 Asegúrate de que la carpeta 'utils' existe y tiene los archivos correctos")
-
 # CSS personalizado - Asegurar que venga después de set_page_config
 st.markdown("""
 <style>
@@ -56,6 +36,27 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+# Ahora importamos el resto de dependencias
+import pandas as pd
+from datetime import datetime
+import sys
+import os
+import io
+
+# Agregar la carpeta utils al path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
+
+# Importar módulos propios - SOLO display_footer
+try:
+    from utils.google_sheets import GoogleSheetsManager
+    from utils.email_sender import EmailManager
+    from utils.auth import AuthManager
+    from utils.helpers import display_footer  # Solo display_footer
+except ImportError as e:
+    st.error(f"❌ Error importando módulos: {e}")
+    st.info("💡 Asegúrate de que la carpeta 'utils' existe y tiene los archivos correctos")
+
 
 # Configuración de página
 def main():
