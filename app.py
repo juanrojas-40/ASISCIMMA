@@ -107,7 +107,7 @@ def show_login_page(auth_manager):
             """, unsafe_allow_html=True)
             
             role = st.radio("Selecciona tu rol:", 
-                           ["👨‍🏫 Profesor", "👩‍💼 Secretaria", "👑 Administrador"],
+                           ["👨‍🏫 Profesor", "👩‍💼 Equipo Sede", "👑 Administrador"],
                            horizontal=True)
             
             username = st.text_input("Usuario")
