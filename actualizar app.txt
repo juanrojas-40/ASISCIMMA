@@ -1,0 +1,35 @@
+# Actualizar requirements
+pip install supabase
+
+ASISTENCIA CIMMA
+
+# Sube el logo y el código
+# Agregar todos los archivos
+git add app.py requirements.txt LOGO.gif LOGO.png LOGO.jpg QR_CIMMA.pdf
+# Hacer commit
+git commit -m "feat: agrega logo del preuniversitario y mejora performance del sistema"
+# Sincronizar con el repositorio
+git pull origin main
+# Si hay conflictos, resolverlos y luego:
+git push origin main
+
+
+
+cd D:\CIMMA
+git add app.py requirements.txt
+git commit -m "🔧 Optimización definitiva: resolución error 429"
+git pull origin main
+git push origin main
+
+
+
+?x-7ZjMqM7Nq.gj
+https://ifsvncyetebayojdzskg.supabase.co
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlmc3ZuY3lldGViYXlvamR6c2tnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEzMjY3MDQsImV4cCI6MjA3NjkwMjcwNH0.NxkryVY92fqfFB6WFPlvgauorgC1pCHlsMHf2heCEg8
+
+#PAESREPORT
+# Sube el logo y el código
+git add appPUNTAJECIMMA.py 
+git commit -m "feat: nuevo"
+git pull --rebase origin main
+git push origin main
