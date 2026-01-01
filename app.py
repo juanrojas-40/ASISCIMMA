@@ -4,6 +4,8 @@ from datetime import datetime
 import sys
 import os
 import io
+# En app.py, la importación debería ser:
+from utils.email_sender import EmailManager
 
 # Agregar la carpeta utils al path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
