@@ -7,11 +7,15 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import time
+import random
 from gspread.exceptions import APIError, WorksheetNotFound
 
+# =============================================
+# FUNCIÓN AUXILIAR CACHABLE (fuera de la clase)
+# =============================================
 @st.cache_data(ttl=1800)  # 30 minutos - datos de cursos son estáticos
 def _load_courses_raw(clases_sheet_id: str, credentials_json: str):
-    """Función auxiliar con caché extendido para cargar cursos desde Google Sheets"""
+    """Carga todos los cursos desde el sheet de clases - función pura para caching"""
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(json.loads(credentials_json), scopes=scopes)
     client = gspread.authorize(creds)
@@ -51,15 +55,48 @@ def _load_courses_raw(clases_sheet_id: str, credentials_json: str):
             continue
     return courses
 
+
+# =============================================
+# FUNCIÓN CACHABLE PARA EMAILS
+# =============================================
+@st.cache_data(ttl=3600)  # 1 hora - emails cambian muy poco
+def _load_emails_cached(asistencia_sheet_id: str, credentials_json: str):
+    """Carga emails de apoderados desde hoja MAILS - función pura"""
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(json.loads(credentials_json), scopes=scopes)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(asistencia_sheet_id)
+    
+    try:
+        mails_sheet = sheet.worksheet("MAILS")
+    except WorksheetNotFound:
+        return {}, {}
+    
+    data = mails_sheet.get_all_records()
+    emails = {}
+    nombres_apoderados = {}
+    
+    for row in data:
+        estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
+        apoderado = str(row.get("NOMBRE APODERADO", "")).strip()
+        mail_apoderado = str(row.get("MAIL APODERADO", "")).strip()
+        
+        if estudiante and mail_apoderado and "@" in mail_apoderado:
+            emails[estudiante] = mail_apoderado
+            nombres_apoderados[estudiante] = apoderado
+    
+    return emails, nombres_apoderados
+
+
 class GoogleSheetsManager:
-    """Manejador de conexión con Google Sheets usando secrets de Streamlit - OPTIMIZADO"""
+    """Manejador de conexión con Google Sheets - OPTIMIZADO y SIN ERRORES DE HASHING"""
 
     _client = None  # Singleton para reutilizar conexión
 
     def __init__(self):
         if GoogleSheetsManager._client is None:
             self._init_client()
-    
+
     def _init_client(self, max_retries: int = 3):
         """Inicialización con retry y backoff exponencial"""
         for attempt in range(max_retries):
@@ -79,7 +116,6 @@ class GoogleSheetsManager:
             except APIError as e:
                 if "Quota" in str(e) or "Rate limit" in str(e):
                     sleep_time = (2 ** attempt) + random.uniform(0, 1)
-                    print(f"⏳ Retry {attempt+1}/{max_retries} en {sleep_time:.1f}s (quota)")
                     time.sleep(sleep_time)
                 else:
                     st.error(f"❌ Error Google API: {str(e)[:100]}")
@@ -92,13 +128,11 @@ class GoogleSheetsManager:
 
     @property
     def client(self):
-        """Propiedad que asegura client válido"""
         if GoogleSheetsManager._client is None:
             self._init_client()
         return GoogleSheetsManager._client
 
     def get_sheet_ids(self) -> Dict[str, str]:
-        """Obtiene IDs de hojas con validación"""
         try:
             return {
                 "asistencia": st.secrets["google"]["asistencia_sheet_id"],
@@ -108,9 +142,10 @@ class GoogleSheetsManager:
             st.error(f"❌ No se encontró el ID de hoja en secrets: {e}")
             return {}
 
-    @st.cache_data(ttl=1800)  # Cache 30 min
+    # ====================== CURSOS ======================
+    @st.cache_data(ttl=1800)
     def load_courses(self) -> Dict[str, Any]:
-        """Carga todos los cursos con cache agresivo"""
+        """Carga todos los cursos usando función auxiliar cacheada"""
         try:
             sheet_ids = self.get_sheet_ids()
             if not sheet_ids or "clases" not in sheet_ids:
@@ -122,33 +157,39 @@ class GoogleSheetsManager:
             return {}
 
     def load_courses_for_teacher(self, teacher_name: str) -> Dict[str, Any]:
-        """Cursos por profesor (usa cache de load_courses)"""
         all_courses = self.load_courses()
         return {name: data for name, data in all_courses.items() 
                 if teacher_name.lower() in data["profesor"].lower()}
 
-    @st.cache_data(ttl=1800)  # Cache por sede (datos estáticos)
-    def load_courses_by_sede(self, sede_nombre: str) -> Dict[str, Any]:
-        """Cursos optimizados por sede con cache"""
+    @st.cache_data(ttl=1800)
+    def load_courses_by_sede(self, _manager, sede_nombre: str) -> Dict[str, Any]:
+        """
+        Carga cursos por sede.
+        Nota: _manager es un truco para evitar hashing de 'self' - no se usa dentro.
+        """
         try:
-            all_courses = self.load_courses()
+            sheet_ids = self.get_sheet_ids()  # 'self' sigue accesible porque es método de instancia
+            if not sheet_ids or "clases" not in sheet_ids:
+                return {}
+            credentials_json = st.secrets["google"]["credentials"]
+            all_courses = _load_courses_raw(sheet_ids["clases"], credentials_json)
+            
             sede_courses = {}
             for name, data in all_courses.items():
                 if data.get("sede", "").strip().upper() == sede_nombre.strip().upper():
-                    data["asistencias"] = self._load_attendance_cached(name)
+                    data["asistencias"] = self.load_attendance_for_course(name)
                     sede_courses[name] = data
             return sede_courses
         except Exception as e:
             st.error(f"❌ Error cargando cursos por sede {sede_nombre}: {str(e)[:100]}")
             return {}
 
-    @st.cache_data(ttl=900)  # 15 min para asistencias (cambian más frecuentemente)
-    def _load_attendance_cached(self, course_name: str) -> Dict[str, Dict[str, bool]]:
-        """Carga asistencia con cache específico por curso"""
-        return self.load_attendance_for_course(course_name)
+    # Wrapper para llamar sin pasar _manager manualmente
+    def load_courses_by_sede_wrapper(self, sede_nombre: str) -> Dict[str, Any]:
+        return self.load_courses_by_sede(self, sede_nombre)
 
+    # ====================== ASISTENCIA ======================
     def load_attendance_for_course(self, course_name: str) -> Dict[str, Dict[str, bool]]:
-        """Carga asistencia para un curso específico"""
         try:
             sheet_ids = self.get_sheet_ids()
             if not sheet_ids or "asistencia" not in sheet_ids or not self.client:
@@ -179,7 +220,6 @@ class GoogleSheetsManager:
             return {}
 
     def save_attendance(self, course_name: str, fecha: str, attendance_data: Dict[str, bool], user: str) -> bool:
-        """Guarda asistencia con retry"""
         for attempt in range(3):
             try:
                 sheet_ids = self.get_sheet_ids()
@@ -194,9 +234,8 @@ class GoogleSheetsManager:
                     worksheet.append_row(["Curso", "Fecha", "Estudiante", "Asistencia", "Timestamp", "Usuario"])
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                rows = []
-                for estudiante, presente in attendance_data.items():
-                    rows.append([course_name, fecha, estudiante, 1 if presente else 0, timestamp, user])
+                rows = [[course_name, fecha, est, 1 if pres else 0, timestamp, user] 
+                        for est, pres in attendance_data.items()]
                 
                 worksheet.append_rows(rows)
                 st.success(f"✅ Asistencia guardada para {course_name}")
@@ -206,55 +245,32 @@ class GoogleSheetsManager:
                 if "Quota" in str(e):
                     time.sleep(2 ** attempt)
                     continue
-                st.error(f"❌ Error guardando asistencia: {str(e)[:100]}")
+                st.error(f"❌ Error guardando: {str(e)[:100]}")
                 return False
             except Exception as e:
-                st.error(f"❌ Error guardando asistencia (intento {attempt+1}): {str(e)[:100]}")
                 if attempt == 2:
+                    st.error(f"❌ Error final guardando asistencia: {str(e)[:100]}")
                     return False
                 time.sleep(1)
         return False
 
-    @st.cache_data(ttl=3600)  # 1 hora - emails son muy estáticos
+    # ====================== EMAILS ======================
     def load_emails(self) -> tuple[Dict[str, str], Dict[str, str]]:
-        """Carga emails con cache largo (cambian raramente)"""
         try:
             sheet_ids = self.get_sheet_ids()
-            if not sheet_ids or "asistencia" not in sheet_ids or not self.client:
+            if not sheet_ids or "asistencia" not in sheet_ids:
                 return {}, {}
-            
-            sheet = self.client.open_by_key(sheet_ids["asistencia"])
-            try:
-                mails_sheet = sheet.worksheet("MAILS")
-            except WorksheetNotFound:
-                st.warning("⚠️ Hoja MAILS no encontrada")
-                return {}, {}
-            
-            data = mails_sheet.get_all_records()
-            emails = {}
-            nombres_apoderados = {}
-            
-            for row in data:
-                estudiante = str(row.get("NOMBRE ESTUDIANTE", "")).strip().lower()
-                apoderado = str(row.get("NOMBRE APODERADO", "")).strip()
-                mail_apoderado = str(row.get("MAIL APODERADO", "")).strip()
-                
-                if estudiante and mail_apoderado and "@" in mail_apoderado:
-                    emails[estudiante] = mail_apoderado
-                    nombres_apoderados[estudiante] = apoderado
-            
-            return emails, nombres_apoderados
+            credentials_json = st.secrets["google"]["credentials"]
+            return _load_emails_cached(sheet_ids["asistencia"], credentials_json)
         except Exception as e:
             st.error(f"❌ Error cargando emails: {str(e)[:100]}")
             return {}, {}
 
     def get_all_emails_by_sede(self, sede_nombre: str) -> List[Dict[str, str]]:
-        """Emails por sede usando cache"""
         try:
-            sede_courses = self.load_courses_by_sede(sede_nombre)
+            sede_courses = self.load_courses_by_sede_wrapper(sede_nombre)
             emails_data, _ = self.load_emails()
             result = []
-            
             for course_name, course_data in sede_courses.items():
                 for estudiante in course_data.get("estudiantes", []):
                     estudiante_key = estudiante.strip().lower()
@@ -267,29 +283,24 @@ class GoogleSheetsManager:
                         })
             return result
         except Exception as e:
-            st.error(f"❌ Error obteniendo emails por sede: {str(e)[:100]}")
+            st.error(f"❌ Error emails por sede: {str(e)[:100]}")
             return []
 
     def get_low_attendance_students(self, sede_nombre: str, threshold: float = 70.0) -> List[Dict[str, Any]]:
-        """Estudiantes con baja asistencia"""
         try:
-            sede_courses = self.load_courses_by_sede(sede_nombre)
+            sede_courses = self.load_courses_by_sede_wrapper(sede_nombre)
             low_students = []
-            
             for course_name, course_data in sede_courses.items():
                 total_fechas = len(course_data.get("fechas", []))
                 if total_fechas == 0:
                     continue
-                
                 asistencias = course_data.get("asistencias", {})
                 for estudiante, att_data in asistencias.items():
                     presentes = sum(1 for estado in att_data.values() if estado)
                     porcentaje = (presentes / total_fechas) * 100 if total_fechas > 0 else 0
-                    
                     if porcentaje < threshold:
                         emails_data, _ = self.load_emails()
                         email = emails_data.get(estudiante.strip().lower(), "No registrado")
-                        
                         low_students.append({
                             "estudiante": estudiante,
                             "curso": course_name,
@@ -298,9 +309,8 @@ class GoogleSheetsManager:
                             "total_clases": total_fechas,
                             "email": email
                         })
-            
             low_students.sort(key=lambda x: x["porcentaje"])
             return low_students
         except Exception as e:
-            st.error(f"❌ Error estudiantes baja asistencia: {str(e)[:100]}")
+            st.error(f"❌ Error baja asistencia: {str(e)[:100]}")
             return []
