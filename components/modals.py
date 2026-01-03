@@ -394,3 +394,338 @@ def render_tooltip(text: str, tooltip_text: str):
     }});
     </script>
     """, unsafe_allow_html=True)
+
+
+def show_alumno_details_modal(alumno_data: dict, on_close: Optional[Callable] = None):
+    """
+    Muestra un modal con los detalles de un alumno.
+    
+    Args:
+        alumno_data: Diccionario con datos del alumno
+        on_close: Función a ejecutar al cerrar el modal (opcional)
+    """
+    modal_key = f"alumno_modal_{alumno_data.get('id', hash(str(alumno_data)))}"
+    
+    # Inicializar estado del modal si no existe
+    if modal_key not in st.session_state:
+        st.session_state[modal_key] = False
+    
+    # Esta función se llama desde fuera para abrir el modal
+    # Normalmente se llamaría con: st.session_state[modal_key] = True
+    
+    if st.session_state[modal_key]:
+        # Overlay
+        st.markdown("""
+        <div style="
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 9998;
+            backdrop-filter: blur(2px);
+        "></div>
+        """, unsafe_allow_html=True)
+        
+        # Modal centrado
+        col1, col2, col3 = st.columns([1, 6, 1])
+        
+        with col2:
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #1A3B8F 0%, #2c5282 100%);
+                color: white;
+                padding: 2rem;
+                border-radius: 15px;
+                box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+                z-index: 9999;
+                position: relative;
+                margin: 2rem 0;
+            ">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <div style="display: flex; align-items: center; gap: 15px;">
+                        <div style="
+                            background: rgba(255,255,255,0.2);
+                            width: 60px;
+                            height: 60px;
+                            border-radius: 50%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            font-size: 2rem;
+                        ">
+                            👤
+                        </div>
+                        <div>
+                            <h2 style="margin: 0; color: white;">{alumno_data.get('nombre_completo', alumno_data.get('nombre', 'Alumno'))}</h2>
+                            <p style="margin: 0; opacity: 0.8;">{alumno_data.get('curso', 'Sin curso')}</p>
+                        </div>
+                    </div>
+                    <div style="
+                        background: rgba(255,255,255,0.1);
+                        padding: 5px 15px;
+                        border-radius: 20px;
+                        font-size: 0.9rem;
+                    ">
+                        {alumno_data.get('estado', 'Activo')}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Contenido principal del modal
+            with st.container():
+                # Tabs para diferentes secciones
+                tab1, tab2, tab3, tab4 = st.tabs(["📋 Información", "📊 Académico", "📞 Contacto", "📝 Notas"])
+                
+                with tab1:
+                    col_info1, col_info2 = st.columns(2)
+                    
+                    with col_info1:
+                        st.markdown("### Información Personal")
+                        st.write(f"**Nombre:** {alumno_data.get('nombre', 'N/A')}")
+                        st.write(f"**Apellido:** {alumno_data.get('apellido', 'N/A')}")
+                        st.write(f"**Edad:** {alumno_data.get('edad', 'N/A')}")
+                        st.write(f"**RUT:** {alumno_data.get('rut', 'N/A')}")
+                        st.write(f"**Fecha Nacimiento:** {alumno_data.get('fecha_nacimiento', 'N/A')}")
+                    
+                    with col_info2:
+                        st.markdown("### Información del Curso")
+                        st.write(f"**Curso:** {alumno_data.get('curso', 'N/A')}")
+                        st.write(f"**Sede:** {alumno_data.get('sede', 'N/A')}")
+                        st.write(f"**Profesor:** {alumno_data.get('profesor', 'N/A')}")
+                        st.write(f"**Fecha Inscripción:** {alumno_data.get('fecha_inscripcion', 'N/A')}")
+                        st.write(f"**Asignatura:** {alumno_data.get('asignatura', 'N/A')}")
+                
+                with tab2:
+                    col_acad1, col_acad2 = st.columns(2)
+                    
+                    with col_acad1:
+                        st.markdown("### Rendimiento Académico")
+                        
+                        # Métricas (valores por defecto si no existen)
+                        promedio = alumno_data.get('promedio', 0)
+                        asistencia = alumno_data.get('porcentaje_asistencia', 0)
+                        notas_count = alumno_data.get('notas_registradas', 0)
+                        
+                        col_metric1, col_metric2 = st.columns(2)
+                        with col_metric1:
+                            st.metric("Promedio", f"{promedio:.1f}")
+                        with col_metric2:
+                            st.metric("Asistencia", f"{asistencia}%")
+                        
+                        st.metric("Notas Registradas", notas_count)
+                        
+                        # Gráfico de progreso simulado
+                        if 'progreso' in alumno_data:
+                            st.progress(alumno_data['progreso'])
+                            st.caption("Progreso general")
+                    
+                    with col_acad2:
+                        st.markdown("### Historial")
+                        st.write(f"**Última Evaluación:** {alumno_data.get('ultima_evaluacion', 'N/A')}")
+                        st.write(f"**Próxima Evaluación:** {alumno_data.get('proxima_evaluacion', 'N/A')}")
+                        st.write(f"**Observaciones:**")
+                        st.text(alumno_data.get('observaciones', 'Sin observaciones'))
+                
+                with tab3:
+                    st.markdown("### Información de Contacto")
+                    
+                    col_contact1, col_contact2 = st.columns(2)
+                    
+                    with col_contact1:
+                        st.write("**📧 Email:**")
+                        email = alumno_data.get('email', 'No registrado')
+                        st.code(email if email else "No registrado")
+                        
+                        st.write("**📱 Teléfono:**")
+                        telefono = alumno_data.get('telefono', 'No registrado')
+                        st.code(telefono if telefono else "No registrado")
+                    
+                    with col_contact2:
+                        st.write("**👥 Apoderado:**")
+                        st.write(f"**Nombre:** {alumno_data.get('nombre_apoderado', 'No registrado')}")
+                        st.write(f"**Email:** {alumno_data.get('email_apoderado', 'No registrado')}")
+                        st.write(f"**Teléfono:** {alumno_data.get('telefono_apoderado', 'No registrado')}")
+                        
+                        # Botón para contactar
+                        if st.button("📧 Enviar Mensaje", use_container_width=True):
+                            st.session_state['contactar_alumno'] = alumno_data
+                            st.session_state[modal_key] = False
+                            st.rerun()
+                
+                with tab4:
+                    st.markdown("### Historial de Notas")
+                    
+                    # Simular tabla de notas
+                    notas_ejemplo = [
+                        {"Fecha": "2024-01-15", "Evaluación": "Prueba 1", "Nota": 6.2, "Ponderación": "20%"},
+                        {"Fecha": "2024-01-22", "Evaluación": "Tarea 1", "Nota": 5.8, "Ponderación": "10%"},
+                        {"Fecha": "2024-02-01", "Evaluación": "Prueba 2", "Nota": 6.5, "Ponderación": "20%"},
+                        {"Fecha": "2024-02-15", "Evaluación": "Proyecto", "Nota": 7.0, "Ponderación": "30%"},
+                    ]
+                    
+                    # Mostrar tabla
+                    import pandas as pd
+                    notas_df = pd.DataFrame(notas_ejemplo)
+                    st.dataframe(notas_df, use_container_width=True, hide_index=True)
+                    
+                    # Formulario para agregar nota
+                    with st.expander("➕ Agregar Nueva Nota"):
+                        with st.form(f"agregar_nota_{modal_key}"):
+                            col_fecha, col_eval = st.columns(2)
+                            with col_fecha:
+                                fecha_nota = st.date_input("Fecha")
+                            with col_eval:
+                                tipo_eval = st.selectbox("Tipo", ["Prueba", "Tarea", "Proyecto", "Examen"])
+                            
+                            col_nota, col_pond = st.columns(2)
+                            with col_nota:
+                                nota = st.number_input("Nota", min_value=1.0, max_value=7.0, step=0.1)
+                            with col_pond:
+                                ponderacion = st.selectbox("Ponderación", ["10%", "20%", "30%", "40%", "50%"])
+                            
+                            observacion = st.text_area("Observación")
+                            
+                            if st.form_submit_button("💾 Guardar Nota"):
+                                st.success("Nota guardada exitosamente")
+                                # Aquí iría la lógica para guardar en la base de datos
+            
+            # Pie del modal con acciones
+            st.markdown("---")
+            
+            col_actions1, col_actions2, col_actions3 = st.columns(3)
+            
+            with col_actions1:
+                if st.button("📄 Generar Reporte", use_container_width=True):
+                    st.success("Reporte generado exitosamente")
+                    # Lógica para generar reporte
+            
+            with col_actions2:
+                if st.button("✏️ Editar Información", use_container_width=True):
+                    st.session_state['editar_alumno'] = alumno_data
+                    st.session_state[modal_key] = False
+                    st.rerun()
+            
+            with col_actions3:
+                if st.button("❌ Cerrar", type="primary", use_container_width=True):
+                    st.session_state[modal_key] = False
+                    if on_close:
+                        on_close()
+                    st.rerun()
+
+
+def show_user_management_modal(user_data: dict = None):
+    """
+    Modal para gestionar usuarios (crear/editar).
+    
+    Args:
+        user_data: Datos del usuario a editar (None para crear nuevo)
+    """
+    modal_key = "user_management_modal"
+    is_edit = user_data is not None
+    
+    if modal_key not in st.session_state:
+        st.session_state[modal_key] = False
+    
+    if st.session_state[modal_key]:
+        title = "✏️ Editar Usuario" if is_edit else "➕ Crear Nuevo Usuario"
+        
+        st.markdown("""
+        <div style="
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 9998;
+        "></div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 3, 1])
+        
+        with col2:
+            st.markdown(f"""
+            <div style="
+                background: white;
+                padding: 2rem;
+                border-radius: 10px;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+                z-index: 9999;
+                position: relative;
+            ">
+                <h2 style="color: #1A3B8F; margin-top: 0;">{title}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            with st.form(f"user_form_{'edit' if is_edit else 'new'}"):
+                col_name, col_email = st.columns(2)
+                with col_name:
+                    nombre = st.text_input("Nombre", value=user_data.get('nombre', '') if is_edit else '')
+                with col_email:
+                    email = st.text_input("Email", value=user_data.get('email', '') if is_edit else '')
+                
+                col_user, col_role = st.columns(2)
+                with col_user:
+                    username = st.text_input("Usuario", value=user_data.get('username', '') if is_edit else '')
+                with col_role:
+                    role = st.selectbox("Rol", ["admin", "profesor", "secretaria", "user"], 
+                                      index=["admin", "profesor", "secretaria", "user"].index(
+                                          user_data.get('role', 'user')) if is_edit else 3)
+                
+                if not is_edit:
+                    col_pass, col_confirm = st.columns(2)
+                    with col_pass:
+                        password = st.text_input("Contraseña", type="password")
+                    with col_confirm:
+                        confirm_pass = st.text_input("Confirmar Contraseña", type="password")
+                
+                col_submit, col_cancel = st.columns(2)
+                with col_submit:
+                    submit = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
+                with col_cancel:
+                    if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                        st.session_state[modal_key] = False
+                        st.rerun()
+                
+                if submit:
+                    if not is_edit and password != confirm_pass:
+                        st.error("Las contraseñas no coinciden")
+                    else:
+                        st.success(f"Usuario {'actualizado' if is_edit else 'creado'} exitosamente")
+                        st.session_state[modal_key] = False
+                        time.sleep(1)
+                        st.rerun()
+
+def show_course_management_modal(course_data: dict = None):
+    """
+    Modal para gestionar cursos.
+    """
+    modal_key = "course_management_modal"
+    is_edit = course_data is not None
+    
+    if modal_key not in st.session_state:
+        st.session_state[modal_key] = False
+    
+    if st.session_state[modal_key]:
+        st.info("Modal de gestión de cursos - Implementación pendiente")
+        if st.button("Cerrar"):
+            st.session_state[modal_key] = False
+            st.rerun()
+
+def show_financial_report_modal():
+    """
+    Modal para reportes financieros.
+    """
+    modal_key = "financial_report_modal"
+    
+    if modal_key not in st.session_state:
+        st.session_state[modal_key] = False
+    
+    if st.session_state[modal_key]:
+        st.info("Modal de reportes financieros - Implementación pendiente")
+        if st.button("Cerrar"):
+            st.session_state[modal_key] = False
+            st.rerun()
