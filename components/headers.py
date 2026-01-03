@@ -1,6 +1,7 @@
 # components/headers.py
 import streamlit as st
 from config import constants
+from typing import Any, Optional
 
 def render_main_header(title: str, subtitle: str = ""):
     """
