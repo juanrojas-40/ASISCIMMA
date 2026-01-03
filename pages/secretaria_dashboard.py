@@ -54,7 +54,7 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
     
     try:
         # Opción para usar parser manual
-        use_manual_parser = st.checkbox("🔧 Usar parser manual (si hay problemas con datos)", value=True)
+        use_manual_parser = st.checkbox("🔧 Usar parser manual", value=True)
         
         with st.spinner("🔄 Cargando cursos..."):
             if use_manual_parser:
@@ -175,27 +175,24 @@ def _manual_parse_courses(sheets_manager: GoogleSheetsManager, user_sede: str) -
     """Parseo manual de cursos basado en la estructura exacta del Excel."""
     
     try:
-        # Obtener datos directamente de Google Sheets
-        # Primero, intentar obtener la hoja de clases
-        sheet_id = sheets_manager.get_sheet_ids().get("clases")
+        # Obtener el ID de la hoja de clases
+        sheet_ids = sheets_manager.get_sheet_ids()
+        sheet_id = sheet_ids.get("clases")
+        
         if not sheet_id:
             st.error("❌ No se encontró ID de hoja de clases")
             return {}
         
         # Obtener todas las hojas del documento
         try:
-            # Intentar acceder a las hojas
-            sheet = sheets_manager.client.open_by_key(sheet_id)
+            client = sheets_manager._get_client()
+            sheet = client.open_by_key(sheet_id)
             worksheets = sheet.worksheets()
             
             cursos_sede = {}
             
             for worksheet in worksheets:
                 sheet_name = worksheet.title
-                
-                # Verificar si esta hoja pertenece a la sede
-                if user_sede == "SAN PEDRO" and not any(x in sheet_name.upper() for x in ["ÁLGEBRA", "ALGEBRA", "4°"]):
-                    continue
                 
                 # Obtener todos los valores de la hoja
                 data = worksheet.get_all_values()
@@ -205,6 +202,9 @@ def _manual_parse_courses(sheets_manager: GoogleSheetsManager, user_sede: str) -
                 
                 if curso_data and curso_data.get("estudiantes"):
                     cursos_sede[sheet_name] = curso_data
+                    st.success(f"✅ Hoja '{sheet_name}' parseada correctamente")
+                else:
+                    st.warning(f"⚠️ Hoja '{sheet_name}' no contiene datos válidos")
             
             return cursos_sede
             
@@ -217,7 +217,7 @@ def _manual_parse_courses(sheets_manager: GoogleSheetsManager, user_sede: str) -
         return {}
 
 def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
-    """Parseo manual de una hoja específica - VERSIÓN MEJORADA."""
+    """Parseo manual de una hoja específica - VERSIÓN CORREGIDA según tu descripción."""
     
     if not sheet_data or len(sheet_data) < 10:
         return None
@@ -227,15 +227,41 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
         "fechas": [],
         "asistencias": {},
         "profesor": "",
-        "sede": target_sede,
-        "asignatura": sheet_name,
+        "sede": "",
+        "asignatura": "",
         "curso": sheet_name
     }
     
-    # PASO 1: Buscar "FECHAS" en la columna A (columna 0)
+    # DEBUG: Mostrar tamaño de datos
+    st.write(f"📊 DEBUG - Hoja: {sheet_name}, Filas: {len(sheet_data)}, Columnas: {len(sheet_data[0]) if sheet_data else 0}")
+    
+    # PASO 1: Extraer información básica según posiciones fijas
+    # Fila 0 (A1): "PROFESOR"
+    # Fila 1 (A2): Nombre del profesor
+    if len(sheet_data) > 1 and len(sheet_data[1]) > 0:
+        curso_data["profesor"] = str(sheet_data[1][0]).strip()
+    
+    # Columna B (columna 1): SEDE
+    # Fila 0 (B1): "SEDE"
+    # Fila 1 (B2): Nombre de la sede
+    if len(sheet_data) > 1 and len(sheet_data[1]) > 1:
+        curso_data["sede"] = str(sheet_data[1][1]).strip()
+    
+    # Verificar si esta hoja pertenece a la sede solicitada
+    if target_sede and curso_data["sede"] and target_sede.upper() not in curso_data["sede"].upper():
+        st.write(f"⚠️ DEBUG - Hoja '{sheet_name}' tiene sede '{curso_data['sede']}', no '{target_sede}'. Saltando.")
+        return None
+    
+    # Columna C (columna 2): ASIGNATURA
+    # Fila 0 (C1): "ASIGNATURA"
+    # Fila 1 (C2): Nombre de la asignatura
+    if len(sheet_data) > 1 and len(sheet_data[1]) > 2:
+        curso_data["asignatura"] = str(sheet_data[1][2]).strip()
+    
+    # PASO 2: Buscar "FECHAS" en la columna A
     fecha_start_idx = None
     for i in range(len(sheet_data)):
-        if i >= 50:  # Limitar búsqueda a primeras 50 filas
+        if i >= 100:  # Limitar búsqueda
             break
             
         row = sheet_data[i]
@@ -243,13 +269,14 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
             cell_text = str(row[0]).strip().upper()
             if "FECHAS" in cell_text:
                 fecha_start_idx = i + 1
+                st.write(f"✅ DEBUG - Encontrado 'FECHAS' en fila {i+1}")
                 break
     
-    # PASO 2: Extraer fechas (desde fecha_start_idx hasta encontrar "NOMBRES ESTUDIANTES")
+    # PASO 3: Extraer fechas (15 filas después de "FECHAS")
     if fecha_start_idx:
         i = fecha_start_idx
         fecha_count = 0
-        max_fechas = 40  # Máximo de fechas según tu estructura
+        max_fechas = 40  # Máximo de fechas
         
         while i < len(sheet_data) and fecha_count < max_fechas:
             row = sheet_data[i]
@@ -263,37 +290,35 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
             if "NOMBRES ESTUDIANTES" in cell_val.upper():
                 break
             
-            # Verificar si parece una fecha (contiene números)
-            if any(char.isdigit() for char in cell_val) and len(cell_val) > 5:
+            # Verificar si parece una fecha
+            if cell_val and any(char.isdigit() for char in cell_val):
                 curso_data["fechas"].append(cell_val)
                 fecha_count += 1
+                st.write(f"📅 DEBUG - Fecha {fecha_count}: {cell_val}")
             
             i += 1
     
-    # PASO 3: Buscar "NOMBRES ESTUDIANTES" en la columna A
+    st.write(f"📊 DEBUG - Total fechas encontradas: {len(curso_data['fechas'])}")
+    
+    # PASO 4: Buscar "NOMBRES ESTUDIANTES" en la columna A
     estudiantes_start_idx = None
     for i in range(len(sheet_data)):
-        if i >= 100:  # Limitar búsqueda
+        if i >= 150:  # Limitar búsqueda
             break
             
         row = sheet_data[i]
         if len(row) > 0 and row[0]:
             cell_text = str(row[0]).strip().upper()
             if "NOMBRES ESTUDIANTES" in cell_text:
-                estudiantes_start_idx = i
+                estudiantes_start_idx = i + 1  # +1 porque los estudiantes empiezan en la siguiente fila
+                st.write(f"✅ DEBUG - Encontrado 'NOMBRES ESTUDIANTES' en fila {i+1}")
                 break
     
-    # PASO 4: Extraer estudiantes y asistencias
+    # PASO 5: Extraer estudiantes (máximo 20) y sus asistencias
     if estudiantes_start_idx:
-        # La fila de "NOMBRES ESTUDIANTES" tiene las fechas en las columnas siguientes
-        header_row = sheet_data[estudiantes_start_idx]
-        
-        # Las fechas ya están en las columnas B, C, D, etc. de la fila de encabezado
-        # Pero ya extrajimos las fechas antes, así que solo extraemos estudiantes
-        
-        i = estudiantes_start_idx + 1
+        i = estudiantes_start_idx
         estudiante_count = 0
-        max_estudiantes = 20  # Máximo de estudiantes según tu estructura
+        max_estudiantes = 20
         
         while i < len(sheet_data) and estudiante_count < max_estudiantes:
             row = sheet_data[i]
@@ -304,46 +329,59 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
             estudiante_val = row[0]
             estudiante_str = str(estudiante_val).strip()
             
-            # Validar que sea un nombre de estudiante
+            # Validar que sea un nombre de estudiante válido
             if (estudiante_str and 
                 estudiante_str != "" and 
                 len(estudiante_str) > 2 and
                 not any(keyword in estudiante_str.upper() for keyword in 
-                       ["FECHAS", "PROFESOR", "SEDE", "DIA", "CURSO", "ASIGNATURA", "ESTUDIANTES", "NOMBRES"]) and
-                not all(c.isdigit() for c in estudiante_str.replace(" ", "").replace(".", ""))):
+                       ["FECHAS", "PROFESOR", "SEDE", "DIA", "CURSO", "ASIGNATURA", "ESTUDIANTES", "NOMBRES"])):
                 
-                curso_data["estudiantes"].append(estudiante_str)
-                estudiante_count += 1
-                
-                # EXTRAER ASISTENCIAS
-                asistencias_est = {}
-                
-                for fecha_idx in range(len(curso_data["fechas"])):
-                    col_idx = fecha_idx + 1  # Columna B = índice 1, C = 2, etc.
+                # Asegurarnos de no duplicar estudiantes
+                if estudiante_str not in curso_data["estudiantes"]:
+                    curso_data["estudiantes"].append(estudiante_str)
+                    estudiante_count += 1
                     
-                    if col_idx < len(row):
-                        valor = row[col_idx]
-                        # Convertir a booleano (1 = presente, cualquier otra cosa = ausente)
-                        if valor in ["1", "1.0", 1, 1.0, "Sí", "sí", "SI", "Presente", "presente"]:
-                            asistencias_est[curso_data["fechas"][fecha_idx]] = True
+                    st.write(f"👤 DEBUG - Estudiante {estudiante_count}: {estudiante_str}")
+                    
+                    # EXTRAER ASISTENCIAS (columnas B, C, D, etc. = índices 1, 2, 3...)
+                    asistencias_est = {}
+                    
+                    for fecha_idx in range(len(curso_data["fechas"])):
+                        col_idx = fecha_idx + 1  # Columna B = índice 1, C = 2, etc.
+                        
+                        if col_idx < len(row):
+                            valor = row[col_idx]
+                            # Convertir a booleano (1 = presente, 0 = ausente)
+                            # Manejar diferentes formatos: "1", "1.0", 1, "0", "0.0", 0
+                            valor_str = str(valor).strip()
+                            if valor_str in ["1", "1.0", "1,0", "Sí", "sí", "SI", "Presente", "presente", "true", "True", "TRUE"]:
+                                asistencias_est[curso_data["fechas"][fecha_idx]] = True
+                            else:
+                                asistencias_est[curso_data["fechas"][fecha_idx]] = False
                         else:
+                            # Si no hay columna para esta fecha, marcar como ausente
                             asistencias_est[curso_data["fechas"][fecha_idx]] = False
-                    else:
-                        # Si no hay columna para esta fecha, marcar como ausente
-                        asistencias_est[curso_data["fechas"][fecha_idx]] = False
-                
-                curso_data["asistencias"][estudiante_str] = asistencias_est
+                    
+                    curso_data["asistencias"][estudiante_str] = asistencias_est
+                    
+                    # Mostrar ejemplo de asistencias para el primer estudiante
+                    if estudiante_count == 1:
+                        st.write(f"📊 DEBUG - Asistencias para {estudiante_str} (primeras 5):")
+                        for fecha_idx, fecha in enumerate(curso_data["fechas"][:5]):
+                            estado = asistencias_est.get(fecha, False)
+                            st.write(f"  - {fecha}: {'✅' if estado else '❌'}")
             
             i += 1
     
-    # PASO 5: Buscar profesor (está en la primera fila, columna A)
-    if len(sheet_data) > 0 and len(sheet_data[0]) > 0:
-        profesor_cell = sheet_data[0][0]
-        if profesor_cell and profesor_cell != "PROFESOR":
-            curso_data["profesor"] = str(profesor_cell)
+    st.write(f"📊 DEBUG - Total estudiantes encontrados: {len(curso_data['estudiantes'])}")
     
     # Verificar que tengamos datos
     if not curso_data["estudiantes"]:
+        st.warning(f"⚠️ DEBUG - Hoja '{sheet_name}' no tiene estudiantes")
+        return None
+    
+    if not curso_data["fechas"]:
+        st.warning(f"⚠️ DEBUG - Hoja '{sheet_name}' no tiene fechas")
         return None
     
     return curso_data
@@ -480,6 +518,10 @@ def _calcular_datos_asistencia(curso_data: Dict[str, Any]) -> List[Dict[str, Any
         })
     
     return data
+
+# ... (el resto de las funciones se mantienen igual: _show_resumen_estadistico, _show_baja_asistencia, 
+# _show_excelente_asistencia, _show_lista_completa, _show_reportes_tab, _generar_reporte, 
+# _mostrar_resultado_reporte, _show_comunicaciones_tab, _show_configuracion_tab) ...
 
 def _show_resumen_estadistico(df: pd.DataFrame):
     """Muestra resumen estadístico."""
