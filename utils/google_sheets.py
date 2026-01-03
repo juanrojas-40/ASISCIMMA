@@ -774,31 +774,21 @@ class GoogleSheetsManager:
             logger.error(f"✗ Error obteniendo estudiantes con baja asistencia: {str(e)}")
             return []
     
-    def clear_cache(self, cache_type: str = "all"):
+    def clear_cache(self):  # <-- CORREGIDO: sin parámetros
         """
         Limpia los caches del manager.
-        
-        Args:
-            cache_type: Tipo de cache a limpiar ("all", "courses", "attendance", "emails")
         """
         try:
-            if cache_type in ["all", "courses"]:
-                self._courses_cache = {}
-                logger.debug("✓ Cache de cursos limpiado")
+            self._courses_cache = {}
+            self._attendance_cache = {}
+            self._sheet_ids_cache = None
             
-            if cache_type in ["all", "attendance"]:
-                self._attendance_cache = {}
-                logger.debug("✓ Cache de asistencia limpiado")
+            # Limpiar cache de Streamlit
+            if hasattr(st, 'cache_data'):
+                st.cache_data.clear()
+                logger.debug("✓ Cache de Streamlit limpiado")
             
-            if cache_type == "all":
-                self._sheet_ids_cache = None
-                
-                # Limpiar cache de Streamlit
-                if hasattr(st, 'cache_data'):
-                    st.cache_data.clear()
-                    logger.debug("✓ Cache de Streamlit limpiado")
-            
-            logger.info(f"✓ Cache {cache_type} limpiado exitosamente")
+            logger.info("✓ Cache del manager limpiado exitosamente")
             return True
             
         except Exception as e:
