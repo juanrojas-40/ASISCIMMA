@@ -1390,6 +1390,12 @@ Fecha del reporte: {{fecha_reporte}}
 def _show_configuracion_tab(sheets_manager: GoogleSheetsManager, email_manager: EmailManager, user_sede: str):
     """Tab de configuración para equipo sede."""
     
+    st.markdown("#### 🔧 Herramientas de Depuración")
+
+    if st.button("🔍 Ver estructura completa de la hoja", key="btn_debug_structure"):
+        _debug_sheet_structure(sheets_manager)
+
+
     st.subheader("⚙️ Configuración de Sede")
     
     # Configuración de Google Sheets
