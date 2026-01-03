@@ -4,7 +4,7 @@ Utils package for ASIS CIMMA
 
 # Importaciones principales
 from .google_sheets import GoogleSheetsManager
-from .email_sender import EmailSender
+from .email_sender import EmailManager  # ← CAMBIA EmailSender por EmailManager
 from .send_apoderados import enviar_comunicado_apoderados
 from .auth import (
     require_login, 
@@ -26,7 +26,7 @@ __all__ = [
     'GoogleSheetsManager',
     
     # Email
-    'EmailSender',
+    'EmailManager',  # ← CAMBIA aquí también
     'enviar_comunicado_apoderados',
     
     # Autenticación
@@ -54,6 +54,3 @@ __all__ = [
     # Cache
     'CacheManager'
 ]
-
-# Nota: No estamos importando 'AuthManager' porque no existe en tu auth.py
-# Tus funciones de auth están definidas como funciones individuales, no como clase
