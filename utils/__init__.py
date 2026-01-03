@@ -19,7 +19,7 @@ from .auth import (
 )
 from .helpers import format_date, calculate_age, validate_email, parse_date
 from .error_handler import handle_error, log_error, display_error_message
-from .cache_manager import CacheManager
+from .cache_manager import CacheManager, get_cache, cached_function
 
 __all__ = [
     # Google Sheets

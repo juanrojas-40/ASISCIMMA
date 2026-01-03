@@ -1,7 +1,7 @@
-# utils/error_handler.py
 import streamlit as st
 import logging
-from typing import Optional
+import traceback
+from typing import Optional, Callable, Any
 from config.settings import AppSettings
 
 logger = logging.getLogger(__name__)
@@ -174,3 +174,35 @@ class ErrorHandler:
                 st.toast(f"✅ {operation} completado", icon="✅")
             else:
                 st.toast(f"❌ {operation} falló", icon="❌")
+
+# Funciones de conveniencia para uso directo
+def handle_error(func: Optional[Callable] = None, context: str = ""):
+    """
+    Decorador para manejar errores en funciones.
+    
+    Args:
+        func: Función a decorar
+        context: Contexto del error
+    """
+    def decorator(f):
+        def wrapper(*args, **kwargs):
+            try:
+                return f(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Error en {f.__name__} ({context}): {str(e)}")
+                ErrorHandler._show_generic_error(e, f"{context} - {f.__name__}")
+                return None
+        return wrapper
+    
+    if func:
+        return decorator(func)
+    return decorator
+
+def log_error(error: Exception, context: str = ""):
+    """Función conveniente para loguear errores."""
+    logger.error(f"Error ({context}): {str(error)}")
+    logger.debug(traceback.format_exc())
+
+def display_error_message(error: Exception, context: str = ""):
+    """Función conveniente para mostrar errores."""
+    ErrorHandler._show_generic_error(error, context)

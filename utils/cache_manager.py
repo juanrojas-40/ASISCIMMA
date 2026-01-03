@@ -1,7 +1,7 @@
-# utils/cache_manager.py
 import streamlit as st
 import time
-from typing import Any, Optional, Dict
+import json
+from typing import Any, Optional, Dict, Callable
 from datetime import datetime, timedelta
 import logging
 
@@ -192,7 +192,7 @@ def cached_function(ttl: int = 1800):
     Args:
         ttl: Tiempo de vida en segundos
     """
-    def decorator(func):
+    def decorator(func: Callable):
         def wrapper(*args, **kwargs):
             # Crear clave única basada en función y argumentos
             func_name = func.__name__
@@ -213,3 +213,6 @@ def cached_function(ttl: int = 1800):
         
         return wrapper
     return decorator
+
+# Función conveniente para uso directo
+CacheManager = CacheManager  # Exportar la clase
