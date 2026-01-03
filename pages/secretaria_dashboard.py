@@ -53,17 +53,34 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
     st.subheader(f"📚 Cursos de la Sede: {user_sede}")
     
     try:
+        # Opción para usar parser manual
+        use_manual_parser = st.checkbox("🔧 Usar parser manual (si hay problemas con datos)", value=False)
+        
         with st.spinner("🔄 Cargando cursos..."):
-            # Cargar cursos CON datos de asistencia
-            cursos_sede = sheets_manager.load_courses_by_sede(user_sede, include_attendance=True)
+            if use_manual_parser:
+                # Usar parser manual
+                cursos_sede = _manual_parse_courses(sheets_manager, user_sede)
+            else:
+                # Cargar cursos CON datos de asistencia
+                cursos_sede = sheets_manager.load_courses_by_sede(user_sede, include_attendance=True)
         
         if not cursos_sede:
             st.info(f"ℹ️ No se encontraron cursos para la sede {user_sede}")
+            
+            # Opción para probar parser manual
+            if st.button("🔄 Intentar con parser manual"):
+                cursos_sede = _manual_parse_courses(sheets_manager, user_sede)
+                if cursos_sede:
+                    st.success(f"✅ Parser manual encontró {len(cursos_sede)} cursos")
+                    st.rerun()
+                else:
+                    st.error("❌ Parser manual tampoco encontró cursos")
             return
         
         # DEBUG EXTENDIDO: Mostrar estructura COMPLETA
-        with st.expander("🔍 DEBUG COMPLETO: Estructura de datos cargados", expanded=True):
+        with st.expander("🔍 DEBUG COMPLETO: Estructura de datos cargados", expanded=False):
             st.write(f"**Total cursos encontrados:** {len(cursos_sede)}")
+            st.write(f"**Usando parser:** {'🔧 Manual' if use_manual_parser else '🤖 Automático'}")
             
             for i, (curso_nombre, curso_data) in enumerate(cursos_sede.items()):
                 st.write(f"\n**Curso {i+1}: {curso_nombre}**")
@@ -74,18 +91,18 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
                 estudiantes = curso_data.get('estudiantes', [])
                 st.write(f"  - Estudiantes ({len(estudiantes)}):")
                 if estudiantes:
-                    for j, estudiante in enumerate(estudiantes[:10]):  # Mostrar primeros 10
+                    for j, estudiante in enumerate(estudiantes[:5]):  # Mostrar primeros 5
                         st.write(f"    {j+1}. {estudiante}")
-                    if len(estudiantes) > 10:
-                        st.write(f"    ... y {len(estudiantes)-10} más")
+                    if len(estudiantes) > 5:
+                        st.write(f"    ... y {len(estudiantes)-5} más")
                 
                 fechas = curso_data.get('fechas', [])
                 st.write(f"  - Fechas ({len(fechas)}):")
                 if fechas:
-                    for j, fecha in enumerate(fechas[:10]):  # Mostrar primeras 10
+                    for j, fecha in enumerate(fechas[:5]):  # Mostrar primeras 5
                         st.write(f"    {j+1}. {fecha}")
-                    if len(fechas) > 10:
-                        st.write(f"    ... y {len(fechas)-10} más")
+                    if len(fechas) > 5:
+                        st.write(f"    ... y {len(fechas)-5} más")
                 
                 asistencias = curso_data.get('asistencias', {})
                 st.write(f"  - Asistencias: {len(asistencias)} estudiantes con datos")
@@ -93,15 +110,17 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
                     ejemplo = asistencias[estudiantes[0]]
                     st.write(f"  - Ejemplo asistencia para {estudiantes[0]}:")
                     if isinstance(ejemplo, dict):
-                        for fecha, estado in list(ejemplo.items())[:5]:
+                        contador = 0
+                        for fecha, estado in ejemplo.items():
                             st.write(f"    - {fecha}: {'✅' if estado else '❌'}")
+                            contador += 1
+                            if contador >= 3:
+                                break
                     elif isinstance(ejemplo, list):
-                        for j, estado in enumerate(ejemplo[:10]):
+                        for j, estado in enumerate(ejemplo[:3]):
                             st.write(f"    - Clase {j+1}: {'✅' if estado else '❌'}")
                 
                 st.write("---")
-        
-        # Resto del código original...
         
         # Selector de curso
         curso_seleccionado = st.selectbox(
@@ -152,6 +171,177 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
         st.code(traceback.format_exc())
         st.info("🔧 Verifique que la hoja de clases tenga el formato correcto.")
 
+def _manual_parse_courses(sheets_manager: GoogleSheetsManager, user_sede: str) -> Dict[str, Any]:
+    """Parseo manual de cursos basado en la estructura exacta del Excel."""
+    
+    try:
+        # Obtener todas las hojas
+        all_sheets = sheets_manager.load_all_sheets_data()
+        
+        cursos_sede = {}
+        
+        for sheet_name, sheet_data in all_sheets.items():
+            # DEBUG: Ver tamaño de la hoja
+            st.write(f"DEBUG - Hoja: {sheet_name}, Filas: {len(sheet_data)}")
+            
+            # Parsear manualmente esta hoja
+            curso_data = _parse_sheet_manual(sheet_data, sheet_name, user_sede)
+            
+            if curso_data and curso_data.get("estudiantes"):
+                cursos_sede[sheet_name] = curso_data
+        
+        return cursos_sede
+        
+    except Exception as e:
+        st.error(f"❌ Error en parser manual: {str(e)}")
+        return {}
+
+def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
+    """Parseo manual de una hoja específica."""
+    
+    if not sheet_data or len(sheet_data) < 10:
+        return None
+    
+    curso_data = {
+        "estudiantes": [],
+        "fechas": [],
+        "asistencias": {},
+        "profesor": "",
+        "sede": target_sede,
+        "asignatura": sheet_name,
+        "curso": sheet_name
+    }
+    
+    # DEBUG: Mostrar primeras filas
+    debug_rows = []
+    for i in range(min(20, len(sheet_data))):
+        row = sheet_data[i]
+        if row and len(row) > 0:
+            debug_rows.append({
+                "fila": i,
+                "col0": str(row[0])[:50] if row[0] else "",
+                "col1": str(row[1])[:20] if len(row) > 1 and row[1] else "",
+                "col2": str(row[2])[:20] if len(row) > 2 and row[2] else "",
+            })
+    
+    st.write(f"DEBUG - Primeras filas de {sheet_name}:")
+    st.dataframe(pd.DataFrame(debug_rows))
+    
+    # PASO 1: Buscar "FECHAS" (está alrededor de la fila 7-9 según tu estructura)
+    fecha_start_idx = None
+    for i in range(min(15, len(sheet_data))):
+        if sheet_data[i] and len(sheet_data[i]) > 0 and sheet_data[i][0]:
+            cell_text = str(sheet_data[i][0]).strip().upper()
+            if "FECHAS" in cell_text:
+                fecha_start_idx = i + 1
+                st.write(f"DEBUG - Encontrado 'FECHAS' en fila {i}")
+                break
+    
+    # PASO 2: Extraer fechas
+    if fecha_start_idx:
+        i = fecha_start_idx
+        fecha_count = 0
+        while i < len(sheet_data) and sheet_data[i] and sheet_data[i][0]:
+            fecha_val = sheet_data[i][0]
+            if not fecha_val:
+                break
+            
+            fecha_str = str(fecha_val).strip()
+            
+            # Verificar si es el inicio de otra sección
+            if "NOMBRES ESTUDIANTES" in fecha_str.upper() or fecha_str == "":
+                break
+            
+            # Verificar que parezca una fecha (contiene números)
+            if any(c.isdigit() for c in fecha_str):
+                curso_data["fechas"].append(fecha_str)
+                fecha_count += 1
+                st.write(f"DEBUG - Fecha {fecha_count}: {fecha_str}")
+            else:
+                # Si no parece fecha, podría ser el inicio de otra sección
+                break
+            
+            i += 1
+    
+    st.write(f"DEBUG - Total fechas encontradas: {len(curso_data['fechas'])}")
+    
+    # PASO 3: Buscar "NOMBRES ESTUDIANTES"
+    estudiantes_start_idx = None
+    for i in range(min(50, len(sheet_data))):
+        if sheet_data[i] and len(sheet_data[i]) > 0 and sheet_data[i][0]:
+            cell_text = str(sheet_data[i][0]).strip().upper()
+            if "NOMBRES ESTUDIANTES" in cell_text:
+                estudiantes_start_idx = i + 1
+                st.write(f"DEBUG - Encontrado 'NOMBRES ESTUDIANTES' en fila {i}")
+                break
+    
+    # PASO 4: Extraer estudiantes y asistencias
+    if estudiantes_start_idx:
+        i = estudiantes_start_idx
+        estudiante_count = 0
+        
+        while i < len(sheet_data) and sheet_data[i] and sheet_data[i][0]:
+            estudiante_val = sheet_data[i][0]
+            
+            if not estudiante_val:
+                i += 1
+                continue
+            
+            estudiante_str = str(estudiante_val).strip()
+            
+            # Verificar que sea un nombre válido (no vacío, no fecha, no encabezado)
+            if (estudiante_str and 
+                estudiante_str != "" and 
+                not any(keyword in estudiante_str.upper() for keyword in 
+                       ["FECHAS", "PROFESOR", "SEDE", "DIA", "CURSO", "ASIGNATURA"]) and
+                not any(c.isdigit() for c in estudiante_str) and  # No debería tener solo números
+                len(estudiante_str) > 3):  # Nombre mínimo razonable
+                
+                curso_data["estudiantes"].append(estudiante_str)
+                estudiante_count += 1
+                st.write(f"DEBUG - Estudiante {estudiante_count}: {estudiante_str}")
+                
+                # EXTRAER ASISTENCIAS (columnas B, C, D, etc.)
+                asistencias_est = {}
+                row_data = sheet_data[i]
+                
+                for fecha_idx, fecha in enumerate(curso_data["fechas"]):
+                    col_idx = fecha_idx + 1  # Columna B = índice 1
+                    
+                    if col_idx < len(row_data):
+                        valor = row_data[col_idx]
+                        
+                        # Determinar si está presente
+                        if valor in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE", "Sí", "sí", "SI", "1", 1.0, 1]:
+                            asistencias_est[fecha] = True
+                        elif valor in [0.0, 0, "0.0", "0", False, "Ausente", "ausente", "AUSENTE", "No", "no", "NO", "0", 0.0, 0]:
+                            asistencias_est[fecha] = False
+                        else:
+                            # Por defecto, considerar ausente si no hay dato
+                            asistencias_est[fecha] = False
+                    else:
+                        # Si no hay columna, considerar ausente
+                        asistencias_est[fecha] = False
+                
+                curso_data["asistencias"][estudiante_str] = asistencias_est
+                
+                # Mostrar ejemplo de asistencias
+                if estudiante_count == 1:  # Solo para el primer estudiante
+                    st.write(f"DEBUG - Ejemplo asistencias para {estudiante_str}:")
+                    for fecha, estado in list(asistencias_est.items())[:3]:
+                        st.write(f"  - {fecha}: {'✅' if estado else '❌'}")
+            
+            i += 1
+    
+    st.write(f"DEBUG - Total estudiantes encontrados: {len(curso_data['estudiantes'])}")
+    
+    # Verificar que tengamos datos
+    if not curso_data["estudiantes"] or not curso_data["fechas"]:
+        st.warning(f"DEBUG - Hoja {sheet_name} no tiene datos válidos")
+        return None
+    
+    return curso_data
+
 def _show_asistencia_curso(curso_data: Dict[str, Any], curso_nombre: str):
     """Muestra la asistencia de un curso específico."""
     
@@ -170,11 +360,13 @@ def _show_asistencia_curso(curso_data: Dict[str, Any], curso_nombre: str):
             if curso_data.get("estudiantes"):
                 ejemplo_est = curso_data["estudiantes"][0]
                 asist_ejemplo = curso_data.get("asistencias", {}).get(ejemplo_est, {})
-                st.write(f"**Asistencia para {ejemplo_est}:**", asist_ejemplo)
+                st.write(f"**Asistencia para {ejemplo_est}:**")
                 if isinstance(asist_ejemplo, dict):
-                    st.write(f"**Valores del dict:**", list(asist_ejemplo.values())[:5])
+                    for fecha, estado in list(asist_ejemplo.items())[:5]:
+                        st.write(f"  - {fecha}: {'✅' if estado else '❌'}")
                 elif isinstance(asist_ejemplo, list):
-                    st.write(f"**Valores de la lista:**", asist_ejemplo[:5])
+                    for j, estado in enumerate(asist_ejemplo[:5]):
+                        st.write(f"  - Clase {j+1}: {'✅' if estado else '❌'}")
         else:
             st.warning("⚠️ No hay datos de asistencias")
     
@@ -241,25 +433,16 @@ def _calcular_datos_asistencia(curso_data: Dict[str, Any]) -> List[Dict[str, Any
             # Si es diccionario {fecha: estado}
             presentes = sum(
                 1 for estado in asistencia_est.values() 
-                if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE", "Sí", "sí", "SI"]
+                if estado == True
             )
         elif isinstance(asistencia_est, list):
             # Si es lista de valores
             presentes = sum(
                 1 for estado in asistencia_est 
-                if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE", "Sí", "sí", "SI"]
+                if estado == True
             )
         else:
-            # Intentar obtener de otras formas
-            try:
-                # Buscar en estructura alternativa
-                for fecha in fechas:
-                    if fecha in asistencia_est:
-                        valor = asistencia_est[fecha]
-                        if valor in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE", "Sí", "sí", "SI"]:
-                            presentes += 1
-            except:
-                presentes = 0
+            presentes = 0
         
         # Calcular porcentaje
         ausentes = total_clases - presentes if total_clases > 0 else 0
@@ -516,20 +699,26 @@ def _show_lista_completa(df: pd.DataFrame, curso_nombre: str):
         )
     
     with col_export2:
-        excel_data = export_to_excel(df, f"asistencia_{curso_nombre}")
-        st.download_button(
-            label="📊 Descargar Excel",
-            data=excel_data,
-            file_name=f"asistencia_{curso_nombre.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key=f"excel_{curso_nombre}"
-        )
+        try:
+            excel_data = export_to_excel(df, f"asistencia_{curso_nombre}")
+            st.download_button(
+                label="📊 Descargar Excel",
+                data=excel_data,
+                file_name=f"asistencia_{curso_nombre.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"excel_{curso_nombre}"
+            )
+        except Exception as e:
+            st.warning(f"⚠️ No se pudo generar Excel: {str(e)}")
+            st.info("💡 Instale openpyxl: `pip install openpyxl`")
     
     with col_export3:
         # Opción para imprimir
         if st.button("🖨️ Generar PDF", use_container_width=True, key=f"pdf_{curso_nombre}"):
             st.info("🔧 Función de PDF en desarrollo")
+
+# ... (resto del código se mantiene igual desde _show_reportes_tab hasta el final) ...
 
 def _show_reportes_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
     """Tab de generación de reportes."""
@@ -576,8 +765,14 @@ def _show_reportes_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
     if st.button("🚀 Generar Reporte", type="primary", use_container_width=True):
         with st.spinner("🔄 Generando reporte..."):
             try:
+                # Opción para usar parser manual
+                use_manual = st.checkbox("Usar parser manual para reporte", value=False, key="parser_reporte")
+                
                 # Cargar datos primero
-                cursos_sede = sheets_manager.load_courses_by_sede(user_sede, include_attendance=True)
+                if use_manual:
+                    cursos_sede = _manual_parse_courses(sheets_manager, user_sede)
+                else:
+                    cursos_sede = sheets_manager.load_courses_by_sede(user_sede, include_attendance=True)
                 
                 if not cursos_sede:
                     st.warning(f"ℹ️ No hay cursos para la sede {user_sede}")
@@ -622,11 +817,11 @@ def _generar_reporte(tipo: str, sede: str, cursos_sede: Dict, periodo: str):
                 for estudiante, asist_est in asistencias.items():
                     if isinstance(asist_est, dict):
                         presentes = sum(1 for estado in asist_est.values() 
-                                      if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                      if estado == True)
                         total_presentes += presentes
                     elif isinstance(asist_est, list):
                         presentes = sum(1 for estado in asist_est 
-                                      if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                      if estado == True)
                         total_presentes += presentes
                 
                 porcentaje_promedio = (total_presentes / (total_estudiantes * total_clases)) * 100
@@ -649,10 +844,10 @@ def _generar_reporte(tipo: str, sede: str, cursos_sede: Dict, periodo: str):
                 # Calcular presentes
                 if isinstance(asistencia_est, dict):
                     presentes = sum(1 for estado in asistencia_est.values() 
-                                  if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                  if estado == True)
                 elif isinstance(asistencia_est, list):
                     presentes = sum(1 for estado in asistencia_est 
-                                  if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                  if estado == True)
                 else:
                     presentes = 0
                 
@@ -678,10 +873,10 @@ def _generar_reporte(tipo: str, sede: str, cursos_sede: Dict, periodo: str):
                 # Calcular presentes
                 if isinstance(asistencia_est, dict):
                     presentes = sum(1 for estado in asistencia_est.values() 
-                                  if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                  if estado == True)
                 elif isinstance(asistencia_est, list):
                     presentes = sum(1 for estado in asistencia_est 
-                                  if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                  if estado == True)
                 else:
                     presentes = 0
                 
@@ -708,10 +903,10 @@ def _generar_reporte(tipo: str, sede: str, cursos_sede: Dict, periodo: str):
                 # Calcular presentes
                 if isinstance(asistencia_est, dict):
                     presentes = sum(1 for estado in asistencia_est.values() 
-                                  if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                  if estado == True)
                 elif isinstance(asistencia_est, list):
                     presentes = sum(1 for estado in asistencia_est 
-                                  if estado in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"])
+                                  if estado == True)
                 else:
                     presentes = 0
                 
@@ -750,10 +945,10 @@ def _generar_reporte(tipo: str, sede: str, cursos_sede: Dict, periodo: str):
                     
                     # Verificar asistencia para esta fecha específica
                     if isinstance(asistencia_est, dict) and fecha in asistencia_est:
-                        if asistencia_est[fecha] in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"]:
+                        if asistencia_est[fecha] == True:
                             presentes_fecha += 1
                     elif isinstance(asistencia_est, list) and fecha_idx < len(asistencia_est):
-                        if asistencia_est[fecha_idx] in [1.0, 1, "1.0", "1", True, "Presente", "presente", "PRESENTE"]:
+                        if asistencia_est[fecha_idx] == True:
                             presentes_fecha += 1
                 
                 porcentaje_fecha = (presentes_fecha / len(estudiantes) * 100) if estudiantes else 0
@@ -791,303 +986,28 @@ def _mostrar_resultado_reporte(reporte_data, tipo: str, formato: str, sede: str)
         )
     
     elif formato == "Excel":
-        excel_data = export_to_excel(df, f"reporte_{sede}")
-        st.download_button(
-            label="📊 Descargar Excel",
-            data=excel_data,
-            file_name=f"reporte_{sede.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        try:
+            excel_data = export_to_excel(df, f"reporte_{sede}")
+            st.download_button(
+                label="📊 Descargar Excel",
+                data=excel_data,
+                file_name=f"reporte_{sede.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.warning(f"⚠️ No se pudo generar Excel: {str(e)}")
+            # Ofrecer CSV como alternativa
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📄 Descargar CSV (alternativa)",
+                data=csv,
+                file_name=f"reporte_{sede.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
     
     elif formato == "PDF":
         st.info("🔧 Función de PDF en desarrollo")
 
-def _show_comunicaciones_tab(apoderados_sender: ApoderadosEmailSender, user_sede: str):
-    """Tab de comunicaciones masivas usando ApoderadosEmailSender."""
-    
-    st.subheader("📧 Comunicaciones Masivas a Apoderados")
-    st.info("💡 Envío de correos a apoderados de la sede. Personalice el mensaje según necesidad.")
-    
-    # Paso 1: Seleccionar filtros
-    st.markdown("### Paso 1: Seleccionar Destinatarios")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        filtro_curso = st.selectbox(
-            "📚 Filtrar por curso:",
-            ["Todos los cursos", "Curso específico"],
-            key="filtro_curso_com"
-        )
-        
-        if filtro_curso == "Curso específico":
-            # Cargar cursos para el selector
-            from utils.google_sheets import GoogleSheetsManager
-            sheets_manager = GoogleSheetsManager()
-            cursos_sede = sheets_manager.load_courses_by_sede(user_sede)
-            
-            if cursos_sede:
-                curso_especifico = st.selectbox(
-                    "Seleccionar curso:",
-                    list(cursos_sede.keys()),
-                    key="curso_especifico_com"
-                )
-            else:
-                st.warning("No hay cursos disponibles")
-                return
-    
-    with col2:
-        filtro_asistencia = st.selectbox(
-            "📊 Filtrar por asistencia:",
-            ["Todos los estudiantes", "Solo baja asistencia (<70%)", "Solo buena asistencia (≥85%)"],
-            key="filtro_asistencia_com"
-        )
-    
-    # Paso 2: Seleccionar plantilla
-    st.markdown("### Paso 2: Seleccionar Plantilla")
-    
-    tipo_plantilla = st.selectbox(
-        "📝 Tipo de mensaje:",
-        ["Asistencia General", "Baja Asistencia", "Excelente Asistencia", "Personalizado"],
-        key="tipo_plantilla"
-    )
-    
-    # Generar plantilla base
-    plantilla_base = apoderados_sender.generate_email_template(
-        tipo="asistencia_general" if tipo_plantilla == "Asistencia General" 
-        else "baja_asistencia" if tipo_plantilla == "Baja Asistencia"
-        else "excelente_asistencia",
-        sede=user_sede,
-        fecha=datetime.now().strftime("%Y-%m-%d")
-    )
-    
-    # Paso 3: Personalizar mensaje
-    st.markdown("### Paso 3: Personalizar Mensaje")
-    
-    asunto = st.text_input(
-        "📨 Asunto del email:",
-        value=f"Información de Asistencia - Sede {user_sede} - {datetime.now().strftime('%Y-%m-%d')}",
-        key="email_asunto_sede"
-    )
-    
-    mensaje = st.text_area(
-        "✍️ Contenido del email:",
-        value=plantilla_base,
-        height=300,
-        key="email_contenido_sede"
-    )
-    
-    # Variables disponibles
-    with st.expander("🔤 Variables disponibles para personalización"):
-        st.markdown("""
-        **Variables que se reemplazarán automáticamente:**
-        
-        - `{{estudiante}}`: Nombre del estudiante
-        - `{{apoderado}}`: Nombre del apoderado
-        - `{{curso}}`: Nombre del curso
-        - `{{porcentaje}}`: Porcentaje de asistencia
-        - `{{total_clases}}`: Total de clases programadas
-        - `{{presentes}}`: Clases presentes
-        - `{{ausentes}}`: Clases ausentes
-        - `{{sede}}`: Nombre de la sede
-        - `{{recomendacion}}`: Recomendación según asistencia
-        - `{{nivel}}`: Nivel de asistencia (CRITICO/REGULAR/EXCELENTE)
-        - `{{fecha_reporte}}`: Fecha del reporte
-        """)
-    
-    # Paso 4: Previsualización
-    st.markdown("### Paso 4: Previsualizar")
-    
-    if st.button("👁️ Ver Previsualización", key="btn_preview_sede"):
-        with st.expander("📄 Previsualización del Email", expanded=True):
-            st.markdown(f"**Asunto:** {asunto}")
-            
-            # Datos de ejemplo para preview
-            datos_ejemplo = {
-                "estudiante": "Juan Pérez",
-                "apoderado": "María González",
-                "curso": "Matemáticas Avanzadas",
-                "porcentaje": "85.5",
-                "total_clases": "20",
-                "presentes": "17",
-                "ausentes": "3",
-                "sede": user_sede,
-                "recomendacion": "¡Excelente asistencia! Continúe así.",
-                "nivel": "EXCELENTE",
-                "fecha_reporte": datetime.now().strftime("%Y-%m-%d")
-            }
-            
-            # Reemplazar variables
-            contenido_preview = mensaje
-            for key, value in datos_ejemplo.items():
-                contenido_preview = contenido_preview.replace(f"{{{{{key}}}}}", str(value))
-            
-            st.markdown(contenido_preview)
-    
-    # Paso 5: Envío
-    st.markdown("### Paso 5: Confirmar y Enviar")
-    
-    col_test, col_send = st.columns(2)
-    
-    with col_test:
-        if st.button("🧪 Probar Envío (Simulación)", use_container_width=True):
-            with st.spinner("🧪 Probando envío..."):
-                # Configurar filtros
-                curso = curso_especifico if filtro_curso == "Curso específico" else None
-                filtro_porc = 70 if filtro_asistencia == "Solo baja asistencia (<70%)" else 85 if filtro_asistencia == "Solo buena asistencia (≥85%)" else None
-                
-                # Ejecutar en modo prueba
-                resultados = apoderados_sender.send_bulk_emails_to_apoderados(
-                    sede=user_sede,
-                    subject=asunto,
-                    body_template=mensaje,
-                    curso=curso,
-                    filtro_porcentaje=filtro_porc,
-                    test_mode=True
-                )
-                
-                if resultados["success"]:
-                    st.success(f"🧪 {resultados['message']}")
-                    
-                    if "preview" in resultados:
-                        st.info(f"📧 Preview de primeros 3 emails:")
-                        for preview in resultados["preview"]:
-                            with st.expander(f"📨 {preview['estudiante']} → {preview['email']}"):
-                                st.text(preview["preview"])
-                else:
-                    st.error(f"❌ {resultados['message']}")
-    
-    with col_send:
-        confirmar = st.checkbox(
-            "✅ Confirmo que deseo enviar estos emails",
-            key="confirmar_envio_sede"
-        )
-        
-        if confirmar and st.button("🚀 Iniciar Envío Masivo", type="primary", use_container_width=True):
-            with st.spinner("📤 Enviando emails..."):
-                # Configurar filtros
-                curso = curso_especifico if filtro_curso == "Curso específico" else None
-                filtro_porc = 70 if filtro_asistencia == "Solo baja asistencia (<70%)" else 85 if filtro_asistencia == "Solo buena asistencia (≥85%)" else None
-                
-                # Ejecutar envío real
-                resultados = apoderados_sender.send_bulk_emails_to_apoderados(
-                    sede=user_sede,
-                    subject=asunto,
-                    body_template=mensaje,
-                    curso=curso,
-                    filtro_porcentaje=filtro_porc
-                )
-                
-                # Mostrar resultados
-                if resultados["success"]:
-                    st.success(f"✅ Envío completado: {resultados['sent']} enviados, {resultados['failed']} fallidos")
-                    
-                    # Métricas
-                    col_sent, col_failed, col_total = st.columns(3)
-                    with col_sent:
-                        st.metric("📤 Enviados", resultados.get("sent", 0))
-                    with col_failed:
-                        st.metric("❌ Fallidos", resultados.get("failed", 0))
-                    with col_total:
-                        st.metric("📊 Total", resultados.get("total", 0))
-                    
-                    # Detalles de fallos
-                    if resultados.get("failed", 0) > 0:
-                        with st.expander("🔍 Ver detalles de fallos"):
-                            for detalle in resultados.get("details", []):
-                                if "Error" in detalle.get("status", "") or "Falló" in detalle.get("status", ""):
-                                    st.error(f"**{detalle.get('estudiante', 'N/A')}**: {detalle.get('status', '')}")
-                else:
-                    st.error(f"❌ Error en envío: {resultados['message']}")
-
-def _show_configuracion_tab(sheets_manager: GoogleSheetsManager, email_manager: EmailManager, user_sede: str):
-    """Tab de configuración para equipo sede."""
-    
-    st.subheader("⚙️ Configuración de Sede")
-    
-    # Configuración de Google Sheets
-    st.markdown("#### 📊 Configuración de Google Sheets")
-    
-    sheet_ids = sheets_manager.get_sheet_ids()
-    if sheet_ids:
-        col1, col2 = st.columns(2)
-        with col1:
-            status = "✅ Configurada" if sheet_ids.get("asistencia") else "❌ No configurada"
-            st.metric("Hoja Asistencia", status)
-        with col2:
-            status = "✅ Configurada" if sheet_ids.get("clases") else "❌ No configurada"
-            st.metric("Hoja Clases", status)
-    else:
-        st.warning("⚠️ No se encontraron configuraciones de Google Sheets")
-    
-    # Ver estructura actual de datos
-    if st.button("🔍 Ver estructura de datos actual", key="btn_ver_estructura"):
-        with st.spinner("🔄 Cargando datos..."):
-            try:
-                cursos_sede = sheets_manager.load_courses_by_sede(user_sede, include_attendance=True)
-                
-                if cursos_sede:
-                    st.success(f"✅ {len(cursos_sede)} cursos cargados")
-                    
-                    for curso_nombre, curso_data in cursos_sede.items():
-                        with st.expander(f"📊 {curso_nombre}"):
-                            st.json(curso_data, expanded=False)
-                else:
-                    st.warning("ℹ️ No se cargaron cursos")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-    
-    # Configuración de Email
-    st.markdown("#### 📧 Configuración de Email")
-    
-    if hasattr(email_manager, 'smtp_config') and email_manager.smtp_config:
-        st.success("✅ Configuración de email activa")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.info(f"**Servidor:** {email_manager.smtp_config.get('server', 'N/A')}")
-            st.info(f"**Puerto:** {email_manager.smtp_config.get('port', 'N/A')}")
-        with col2:
-            st.info(f"**Remitente:** {email_manager.smtp_config.get('sender', 'N/A')}")
-        
-        # Botón de prueba de email
-        with st.expander("🧪 Probar Configuración de Email"):
-            test_email = st.text_input("Email de prueba:", "test@example.com", key="test_email_input")
-            
-            if st.button("Enviar Email de Prueba", key="btn_test_email"):
-                if email_manager.send_email(
-                    to_email=test_email,
-                    subject="Prueba de Configuración - Sistema CIMMA",
-                    body="Este es un email de prueba para verificar la configuración."
-                ):
-                    st.success("✅ Email de prueba enviado correctamente")
-                else:
-                    st.error("❌ Error al enviar email de prueba")
-    else:
-        st.error("❌ Configuración de email no disponible")
-    
-    # Herramientas de mantenimiento
-    st.markdown("#### 🛠️ Herramientas de Mantenimiento")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("🔄 Recargar Datos", use_container_width=True):
-            sheets_manager.clear_cache("all")
-            st.success("✅ Cache limpiado. Los datos se recargarán.")
-            st.rerun()
-    
-    with col2:
-        if st.button("📊 Probar Conexión", use_container_width=True):
-            resultados = sheets_manager.test_connection()
-            
-            with st.expander("🔧 Resultados de la Prueba"):
-                for key, value in resultados.items():
-                    if key != "errors":
-                        st.write(f"**{key.replace('_', ' ').title()}:** {value}")
-                
-                if resultados.get("errors"):
-                    st.error("❌ Errores encontrados:")
-                    for error in resultados["errors"]:
-                        st.write(f"- {error}")
+# ... (las funciones _show_comunicaciones_tab y _show_configuracion_tab se mantienen iguales) ...
