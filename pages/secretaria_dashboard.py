@@ -183,16 +183,26 @@ def _manual_parse_courses(sheets_manager: GoogleSheetsManager, user_sede: str) -
             st.error("❌ No se encontró ID de hoja de clases")
             return {}
         
-        # Obtener todas las hojas del documento
+        # Obtener todas las hojas del documento usando el cliente del sheets_manager
         try:
-            client = sheets_manager._get_client()
-            sheet = client.open_by_key(sheet_id)
-            worksheets = sheet.worksheets()
+            # Acceder al cliente directamente (asumiendo que sheets_manager tiene un atributo 'client')
+            if hasattr(sheets_manager, 'client') and sheets_manager.client:
+                sheet = sheets_manager.client.open_by_key(sheet_id)
+                worksheets = sheet.worksheets()
+            else:
+                # Intentar inicializar el cliente si no está disponible
+                sheets_manager._init_client()
+                sheet = sheets_manager.client.open_by_key(sheet_id)
+                worksheets = sheet.worksheets()
             
             cursos_sede = {}
             
             for worksheet in worksheets:
                 sheet_name = worksheet.title
+                
+                # Solo procesar hojas que tengan contenido relevante
+                if len(worksheet.get_all_values()) < 10:
+                    continue
                 
                 # Obtener todos los valores de la hoja
                 data = worksheet.get_all_values()
@@ -204,20 +214,24 @@ def _manual_parse_courses(sheets_manager: GoogleSheetsManager, user_sede: str) -
                     cursos_sede[sheet_name] = curso_data
                     st.success(f"✅ Hoja '{sheet_name}' parseada correctamente")
                 else:
-                    st.warning(f"⚠️ Hoja '{sheet_name}' no contiene datos válidos")
+                    st.warning(f"⚠️ Hoja '{sheet_name}' no contiene datos válidos o no pertenece a la sede {user_sede}")
             
             return cursos_sede
             
         except Exception as e:
             st.error(f"❌ Error accediendo a Google Sheets: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
             return {}
         
     except Exception as e:
         st.error(f"❌ Error en parser manual: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return {}
 
 def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
-    """Parseo manual de una hoja específica - VERSIÓN CORREGIDA según tu descripción."""
+    """Parseo manual de una hoja específica - VERSIÓN SIMPLIFICADA."""
     
     if not sheet_data or len(sheet_data) < 10:
         return None
@@ -235,33 +249,54 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
     # DEBUG: Mostrar tamaño de datos
     st.write(f"📊 DEBUG - Hoja: {sheet_name}, Filas: {len(sheet_data)}, Columnas: {len(sheet_data[0]) if sheet_data else 0}")
     
-    # PASO 1: Extraer información básica según posiciones fijas
-    # Fila 0 (A1): "PROFESOR"
-    # Fila 1 (A2): Nombre del profesor
-    if len(sheet_data) > 1 and len(sheet_data[1]) > 0:
-        curso_data["profesor"] = str(sheet_data[1][0]).strip()
+    # PASO 1: Buscar información básica
+    # Buscar "PROFESOR" en la primera columna
+    for i, row in enumerate(sheet_data):
+        if i >= 10:  # Buscar solo en primeras 10 filas
+            break
+        if row and len(row) > 0:
+            cell_text = str(row[0]).strip().upper()
+            if "PROFESOR" in cell_text and i + 1 < len(sheet_data):
+                # La siguiente fila tiene el nombre del profesor
+                if len(sheet_data[i+1]) > 0:
+                    curso_data["profesor"] = str(sheet_data[i+1][0]).strip()
+                    break
     
-    # Columna B (columna 1): SEDE
-    # Fila 0 (B1): "SEDE"
-    # Fila 1 (B2): Nombre de la sede
-    if len(sheet_data) > 1 and len(sheet_data[1]) > 1:
-        curso_data["sede"] = str(sheet_data[1][1]).strip()
+    # Buscar "SEDE" en la columna B
+    for i, row in enumerate(sheet_data):
+        if i >= 10:
+            break
+        if row and len(row) > 1:
+            cell_text = str(row[1]).strip().upper()
+            if "SEDE" in cell_text and i + 1 < len(sheet_data):
+                if len(sheet_data[i+1]) > 1:
+                    curso_data["sede"] = str(sheet_data[i+1][1]).strip()
+                    break
     
     # Verificar si esta hoja pertenece a la sede solicitada
-    if target_sede and curso_data["sede"] and target_sede.upper() not in curso_data["sede"].upper():
-        st.write(f"⚠️ DEBUG - Hoja '{sheet_name}' tiene sede '{curso_data['sede']}', no '{target_sede}'. Saltando.")
-        return None
+    if target_sede and curso_data["sede"]:
+        if target_sede.upper() not in curso_data["sede"].upper():
+            st.write(f"⚠️ DEBUG - Hoja '{sheet_name}' tiene sede '{curso_data['sede']}', no '{target_sede}'. Saltando.")
+            return None
+    else:
+        # Si no se encontró sede, asumir que es de la sede solicitada
+        curso_data["sede"] = target_sede
     
-    # Columna C (columna 2): ASIGNATURA
-    # Fila 0 (C1): "ASIGNATURA"
-    # Fila 1 (C2): Nombre de la asignatura
-    if len(sheet_data) > 1 and len(sheet_data[1]) > 2:
-        curso_data["asignatura"] = str(sheet_data[1][2]).strip()
+    # Buscar "ASIGNATURA" en la columna C
+    for i, row in enumerate(sheet_data):
+        if i >= 10:
+            break
+        if row and len(row) > 2:
+            cell_text = str(row[2]).strip().upper()
+            if "ASIGNATURA" in cell_text and i + 1 < len(sheet_data):
+                if len(sheet_data[i+1]) > 2:
+                    curso_data["asignatura"] = str(sheet_data[i+1][2]).strip()
+                    break
     
     # PASO 2: Buscar "FECHAS" en la columna A
     fecha_start_idx = None
     for i in range(len(sheet_data)):
-        if i >= 100:  # Limitar búsqueda
+        if i >= 100:
             break
             
         row = sheet_data[i]
@@ -272,29 +307,29 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
                 st.write(f"✅ DEBUG - Encontrado 'FECHAS' en fila {i+1}")
                 break
     
-    # PASO 3: Extraer fechas (15 filas después de "FECHAS")
+    # PASO 3: Extraer fechas
     if fecha_start_idx:
         i = fecha_start_idx
         fecha_count = 0
-        max_fechas = 40  # Máximo de fechas
         
-        while i < len(sheet_data) and fecha_count < max_fechas:
+        while i < len(sheet_data) and fecha_count < 40:  # Máximo 40 fechas
             row = sheet_data[i]
-            if len(row) == 0 or not row[0]:
+            if len(row) == 0:
                 i += 1
                 continue
             
-            cell_val = str(row[0]).strip()
+            cell_val = row[0] if len(row) > 0 else ""
+            cell_str = str(cell_val).strip() if cell_val else ""
             
-            # Si encontramos "NOMBRES ESTUDIANTES", detenemos
-            if "NOMBRES ESTUDIANTES" in cell_val.upper():
+            # Si encontramos "NOMBRES ESTUDIANTES" o una fila vacía, detenemos
+            if not cell_str or "NOMBRES ESTUDIANTES" in cell_str.upper():
                 break
             
-            # Verificar si parece una fecha
-            if cell_val and any(char.isdigit() for char in cell_val):
-                curso_data["fechas"].append(cell_val)
+            # Verificar si parece una fecha (contiene números)
+            if cell_str and any(char.isdigit() for char in cell_str):
+                curso_data["fechas"].append(cell_str)
                 fecha_count += 1
-                st.write(f"📅 DEBUG - Fecha {fecha_count}: {cell_val}")
+                st.write(f"📅 DEBUG - Fecha {fecha_count}: {cell_str}")
             
             i += 1
     
@@ -303,7 +338,7 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
     # PASO 4: Buscar "NOMBRES ESTUDIANTES" en la columna A
     estudiantes_start_idx = None
     for i in range(len(sheet_data)):
-        if i >= 150:  # Limitar búsqueda
+        if i >= 150:
             break
             
         row = sheet_data[i]
@@ -322,12 +357,12 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
         
         while i < len(sheet_data) and estudiante_count < max_estudiantes:
             row = sheet_data[i]
-            if len(row) == 0 or not row[0]:
+            if len(row) == 0:
                 i += 1
                 continue
             
-            estudiante_val = row[0]
-            estudiante_str = str(estudiante_val).strip()
+            estudiante_val = row[0] if len(row) > 0 else ""
+            estudiante_str = str(estudiante_val).strip() if estudiante_val else ""
             
             # Validar que sea un nombre de estudiante válido
             if (estudiante_str and 
@@ -352,8 +387,7 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
                         if col_idx < len(row):
                             valor = row[col_idx]
                             # Convertir a booleano (1 = presente, 0 = ausente)
-                            # Manejar diferentes formatos: "1", "1.0", 1, "0", "0.0", 0
-                            valor_str = str(valor).strip()
+                            valor_str = str(valor).strip() if valor else ""
                             if valor_str in ["1", "1.0", "1,0", "Sí", "sí", "SI", "Presente", "presente", "true", "True", "TRUE"]:
                                 asistencias_est[curso_data["fechas"][fecha_idx]] = True
                             else:
@@ -385,6 +419,8 @@ def _parse_sheet_manual(sheet_data, sheet_name, target_sede):
         return None
     
     return curso_data
+
+# ... (el resto del código se mantiene igual hasta el final) ...
 
 def _show_asistencia_curso(curso_data: Dict[str, Any], curso_nombre: str):
     """Muestra la asistencia de un curso específico."""
