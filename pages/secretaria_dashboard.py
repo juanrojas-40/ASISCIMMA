@@ -61,16 +61,47 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
             st.info(f"ℹ️ No se encontraron cursos para la sede {user_sede}")
             return
         
-        # DEBUG: Mostrar estructura de datos
-        with st.expander("🔍 DEBUG: Estructura de datos cargados", expanded=False):
+        # DEBUG EXTENDIDO: Mostrar estructura COMPLETA
+        with st.expander("🔍 DEBUG COMPLETO: Estructura de datos cargados", expanded=True):
             st.write(f"**Total cursos encontrados:** {len(cursos_sede)}")
+            
             for i, (curso_nombre, curso_data) in enumerate(cursos_sede.items()):
                 st.write(f"\n**Curso {i+1}: {curso_nombre}**")
                 st.write(f"  - Profesor: {curso_data.get('profesor', 'No encontrado')}")
-                st.write(f"  - Estudiantes: {len(curso_data.get('estudiantes', []))}")
-                st.write(f"  - Fechas: {len(curso_data.get('fechas', []))}")
-                st.write(f"  - Primer estudiante: {curso_data.get('estudiantes', [''])[0] if curso_data.get('estudiantes') else 'Ninguno'}")
-                st.write(f"  - Asistencias keys: {list(curso_data.get('asistencias', {}).keys())[:3] if curso_data.get('asistencias') else []}")
+                st.write(f"  - Sede: {curso_data.get('sede', 'No encontrada')}")
+                st.write(f"  - Asignatura: {curso_data.get('asignatura', 'No especificada')}")
+                
+                estudiantes = curso_data.get('estudiantes', [])
+                st.write(f"  - Estudiantes ({len(estudiantes)}):")
+                if estudiantes:
+                    for j, estudiante in enumerate(estudiantes[:10]):  # Mostrar primeros 10
+                        st.write(f"    {j+1}. {estudiante}")
+                    if len(estudiantes) > 10:
+                        st.write(f"    ... y {len(estudiantes)-10} más")
+                
+                fechas = curso_data.get('fechas', [])
+                st.write(f"  - Fechas ({len(fechas)}):")
+                if fechas:
+                    for j, fecha in enumerate(fechas[:10]):  # Mostrar primeras 10
+                        st.write(f"    {j+1}. {fecha}")
+                    if len(fechas) > 10:
+                        st.write(f"    ... y {len(fechas)-10} más")
+                
+                asistencias = curso_data.get('asistencias', {})
+                st.write(f"  - Asistencias: {len(asistencias)} estudiantes con datos")
+                if estudiantes and asistencias and estudiantes[0] in asistencias:
+                    ejemplo = asistencias[estudiantes[0]]
+                    st.write(f"  - Ejemplo asistencia para {estudiantes[0]}:")
+                    if isinstance(ejemplo, dict):
+                        for fecha, estado in list(ejemplo.items())[:5]:
+                            st.write(f"    - {fecha}: {'✅' if estado else '❌'}")
+                    elif isinstance(ejemplo, list):
+                        for j, estado in enumerate(ejemplo[:10]):
+                            st.write(f"    - Clase {j+1}: {'✅' if estado else '❌'}")
+                
+                st.write("---")
+        
+        # Resto del código original...
         
         # Selector de curso
         curso_seleccionado = st.selectbox(
