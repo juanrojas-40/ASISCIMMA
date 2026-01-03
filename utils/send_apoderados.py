@@ -345,3 +345,44 @@ Preuniversitario CIMMA
 def get_apoderados_sender() -> ApoderadosEmailSender:
     """Retorna una instancia de ApoderadosEmailSender."""
     return ApoderadosEmailSender()
+
+# Agrega al final del archivo send_apoderados.py
+
+def enviar_comunicado_apoderados(
+    sede: str,
+    subject: str,
+    body_template: str,
+    curso: Optional[str] = None,
+    filtro_porcentaje: Optional[float] = None,
+    fecha_reporte: Optional[str] = None,
+    test_mode: bool = False
+) -> Dict[str, Any]:
+    """
+    Función conveniente para enviar comunicados a apoderados.
+    
+    Esta función envuelve la funcionalidad de ApoderadosEmailSender
+    para facilitar su uso desde otras partes del sistema.
+    """
+    try:
+        sender = ApoderadosEmailSender()
+        return sender.send_bulk_emails_to_apoderados(
+            sede=sede,
+            subject=subject,
+            body_template=body_template,
+            curso=curso,
+            filtro_porcentaje=filtro_porcentaje,
+            fecha_reporte=fecha_reporte,
+            test_mode=test_mode
+        )
+    except Exception as e:
+        logger.error(f"Error en enviar_comunicado_apoderados: {e}")
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}",
+            "sent": 0,
+            "failed": 0,
+            "total": 0
+        }
+
+# También puedes agregar alias para compatibilidad
+ApoderadosSender = ApoderadosEmailSender

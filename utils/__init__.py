@@ -4,8 +4,8 @@ Utils package for ASIS CIMMA
 
 # Importaciones principales
 from .google_sheets import GoogleSheetsManager
-from .email_sender import EmailManager  # ← CAMBIA EmailSender por EmailManager
-from .send_apoderados import enviar_comunicado_apoderados
+from .email_sender import EmailManager
+from .send_apoderados import enviar_comunicado_apoderados, ApoderadosEmailSender
 from .auth import (
     require_login, 
     get_current_user, 
@@ -26,8 +26,9 @@ __all__ = [
     'GoogleSheetsManager',
     
     # Email
-    'EmailManager',  # ← CAMBIA aquí también
+    'EmailManager',
     'enviar_comunicado_apoderados',
+    'ApoderadosEmailSender',
     
     # Autenticación
     'require_login',
