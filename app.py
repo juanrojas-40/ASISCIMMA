@@ -99,7 +99,23 @@ try:
     from utils.google_sheets import GoogleSheetsManager
     from utils.email_sender import EmailManager
     from utils.send_apoderados import ApoderadosEmailSender
-    from utils.auth import AuthManager
+    from utils.auth import (
+        require_login, 
+        get_current_user, 
+        authenticate_user,
+        logout_user,
+        is_authenticated,
+        show_login_form,
+        require_any_role,
+        get_all_users,
+        check_permission
+    )
+
+
+
+
+
+
     from utils.error_handler import ErrorHandler
     from utils.cache_manager import CacheManager
     
