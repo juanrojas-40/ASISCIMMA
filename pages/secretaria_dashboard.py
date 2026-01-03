@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List
 import io
 
 from utils.google_sheets import GoogleSheetsManager
@@ -54,7 +54,8 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
     
     try:
         with st.spinner("🔄 Cargando cursos..."):
-            cursos_sede = sheets_manager.load_courses_by_sede(user_sede)
+            # Cargar cursos CON datos de asistencia
+            cursos_sede = sheets_manager.load_courses_by_sede(user_sede, include_attendance=True)
         
         if not cursos_sede:
             st.info(f"ℹ️ No se encontraron cursos para la sede {user_sede}")
@@ -108,7 +109,7 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
         st.info("🔧 Verifique que la hoja de clases tenga el formato correcto.")
 
 def _show_asistencia_curso(curso_data: Dict[str, Any], curso_nombre: str):
-    """Muestra la asistencia de un curso específico."""
+    """Muestra la asistencia de un curso específico CORREGIDO."""
     
     st.subheader("📊 Asistencia por Estudiante")
     
@@ -124,23 +125,12 @@ def _show_asistencia_curso(curso_data: Dict[str, Any], curso_nombre: str):
         st.info("ℹ️ No hay estudiantes en este curso")
         return
     
-    # Calcular datos
-    data = []
-    for estudiante in curso_data["estudiantes"]:
-        asistencias_est = curso_data.get("asistencias", {}).get(estudiante, {})
-        total_clases = len(curso_data["fechas"])
-        presentes = sum(1 for estado in asistencias_est.values() if estado)
-        ausentes = total_clases - presentes
-        porcentaje = (presentes / total_clases * 100) if total_clases > 0 else 0
-        
-        data.append({
-            "Estudiante": estudiante,
-            "Presente": presentes,
-            "Ausente": ausentes,
-            "Total Clases": total_clases,
-            "Asistencia %": porcentaje,
-            "Estado": "✅ Adecuado" if porcentaje >= 70 else "⚠️ Bajo" if porcentaje >= 50 else "❌ Crítico"
-        })
+    # OBTENER DATOS DE ASISTENCIA CORRECTAMENTE
+    data = _calcular_datos_asistencia(curso_data)
+    
+    if not data:
+        st.warning("⚠️ No se pudieron calcular los datos de asistencia")
+        return
     
     df = pd.DataFrame(data)
     
@@ -154,140 +144,308 @@ def _show_asistencia_curso(curso_data: Dict[str, Any], curso_nombre: str):
     else:
         _show_lista_completa(df, curso_nombre)
 
+def _calcular_datos_asistencia(curso_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Calcula los datos de asistencia según la estructura real de Google Sheets."""
+    
+    data = []
+    
+    # Obtener estudiantes del curso
+    estudiantes = curso_data.get("estudiantes", [])
+    fechas = curso_data.get("fechas", [])
+    
+    if not estudiantes:
+        return data
+    
+    # Obtener datos de asistencia
+    asistencias = curso_data.get("asistencias", {})
+    total_clases = len(fechas)
+    
+    for estudiante in estudiantes:
+        # Obtener asistencia del estudiante (puede ser dict o lista según tu estructura)
+        asistencia_est = asistencias.get(estudiante, {})
+        
+        # Calcular presentes (adaptar según tu estructura real)
+        if isinstance(asistencia_est, dict):
+            # Si es diccionario {fecha: booleano}
+            presentes = sum(1 for estado in asistencia_est.values() if estado)
+        elif isinstance(asistencia_est, list):
+            # Si es lista de booleanos
+            presentes = sum(1 for estado in asistencia_est if estado)
+        else:
+            # Si no hay datos
+            presentes = 0
+        
+        # Calcular porcentaje
+        ausentes = total_clases - presentes if total_clases > 0 else 0
+        porcentaje = (presentes / total_clases * 100) if total_clases > 0 else 0
+        
+        # Determinar estado
+        if porcentaje >= 85:
+            estado = "🏆 Excelente"
+            icono = "✅"
+        elif porcentaje >= 70:
+            estado = "✅ Adecuado"
+            icono = "✅"
+        elif porcentaje >= 50:
+            estado = "⚠️ Bajo"
+            icono = "⚠️"
+        else:
+            estado = "❌ Crítico"
+            icono = "❌"
+        
+        data.append({
+            "Estudiante": estudiante,
+            "Presente": presentes,
+            "Ausente": ausentes,
+            "Total Clases": total_clases,
+            "Asistencia %": porcentaje,
+            "Estado": estado,
+            "Icono": icono
+        })
+    
+    return data
+
 def _show_resumen_estadistico(df: pd.DataFrame):
     """Muestra resumen estadístico."""
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("📊 Asistencia Promedio", f"{df['Asistencia %'].mean():.1f}%")
+        avg = df['Asistencia %'].mean()
+        st.metric("📊 Asistencia Promedio", f"{avg:.1f}%", 
+                 delta=f"{avg - 70:.1f}%" if avg else None,
+                 delta_color="normal" if avg >= 70 else "inverse")
+    
     with col2:
         criticos = len(df[df['Asistencia %'] < 70])
-        st.metric("⚠️ Estudiantes Críticos", criticos, delta=None)
+        st.metric("⚠️ < 70%", criticos, 
+                 delta=f"{criticos/len(df)*100:.1f}%" if len(df) > 0 else None,
+                 delta_color="inverse")
+    
     with col3:
         regulares = len(df[(df['Asistencia %'] >= 70) & (df['Asistencia %'] < 85)])
-        st.metric("🟡 Estudiantes Regulares", regulares)
+        st.metric("🟡 70-84%", regulares)
+    
     with col4:
         excelentes = len(df[df['Asistencia %'] >= 85])
-        st.metric("🏆 Excelente Asistencia", excelentes)
+        st.metric("🏆 ≥85%", excelentes)
     
     # Gráfico de distribución
     st.subheader("📈 Distribución de Asistencia")
-    chart_data = df[['Estudiante', 'Asistencia %']].set_index('Estudiante')
+    
+    # Preparar datos para gráfico
+    chart_df = df.copy()
+    chart_df = chart_df.sort_values('Asistencia %', ascending=False)
+    
+    # Mostrar gráfico de barras
+    chart_data = chart_df[['Estudiante', 'Asistencia %']].set_index('Estudiante')
     st.bar_chart(chart_data, height=300)
 
 def _show_baja_asistencia(df: pd.DataFrame):
     """Muestra estudiantes con baja asistencia."""
     
-    df_filtrado = df[df['Asistencia %'] < 70]
+    df_filtrado = df[df['Asistencia %'] < 70].copy()
     
     if len(df_filtrado) > 0:
         st.warning(f"⚠️ {len(df_filtrado)} estudiantes con baja asistencia (<70%)")
         
-        # Mostrar tabla
+        # Ordenar por menor porcentaje
+        df_filtrado = df_filtrado.sort_values('Asistencia %')
+        
+        # Mostrar tabla con colores
         st.dataframe(
-            df_filtrado.sort_values('Asistencia %'),
+            df_filtrado[['Estudiante', 'Asistencia %', 'Presente', 'Ausente', 'Total Clases']],
             use_container_width=True,
             height=400,
             column_config={
+                "Estudiante": st.column_config.TextColumn(
+                    "Estudiante",
+                    width="medium"
+                ),
                 "Asistencia %": st.column_config.ProgressColumn(
                     "Asistencia %",
                     format="%.1f%%",
                     min_value=0,
                     max_value=100,
+                    width="small"
+                ),
+                "Presente": st.column_config.NumberColumn(
+                    "✅ Presente",
+                    width="small"
+                ),
+                "Ausente": st.column_config.NumberColumn(
+                    "❌ Ausente",
+                    width="small"
+                ),
+                "Total Clases": st.column_config.NumberColumn(
+                    "📅 Total",
+                    width="small"
                 )
             }
         )
+        
+        # Opción para exportar
+        csv = df_filtrado.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Exportar estudiantes con baja asistencia",
+            data=csv,
+            file_name=f"baja_asistencia_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
     else:
-        st.success("✅ Todos los estudiantes tienen asistencia adecuada")
+        st.success("✅ Todos los estudiantes tienen asistencia adecuada (≥70%)")
 
 def _show_excelente_asistencia(df: pd.DataFrame):
     """Muestra estudiantes con excelente asistencia."""
     
-    df_filtrado = df[df['Asistencia %'] >= 85]
+    df_filtrado = df[df['Asistencia %'] >= 85].copy()
     
     if len(df_filtrado) > 0:
         st.success(f"🏆 {len(df_filtrado)} estudiantes con excelente asistencia (≥85%)")
         
+        # Ordenar por mayor porcentaje
+        df_filtrado = df_filtrado.sort_values('Asistencia %', ascending=False)
+        
         # Mostrar tabla
         st.dataframe(
-            df_filtrado.sort_values('Asistencia %', ascending=False),
+            df_filtrado[['Estudiante', 'Asistencia %', 'Presente', 'Total Clases']],
             use_container_width=True,
             height=400,
             column_config={
+                "Estudiante": st.column_config.TextColumn(
+                    "Estudiante",
+                    width="medium"
+                ),
                 "Asistencia %": st.column_config.ProgressColumn(
                     "Asistencia %",
                     format="%.1f%%",
                     min_value=0,
                     max_value=100,
+                    width="small"
+                ),
+                "Presente": st.column_config.NumberColumn(
+                    "✅ Presente",
+                    width="small"
+                ),
+                "Total Clases": st.column_config.NumberColumn(
+                    "📅 Total",
+                    width="small"
                 )
             }
         )
     else:
-        st.info("ℹ️ No hay estudiantes con asistencia excelente")
+        st.info("ℹ️ No hay estudiantes con asistencia excelente (≥85%)")
 
 def _show_lista_completa(df: pd.DataFrame, curso_nombre: str):
-    """Muestra lista completa de estudiantes."""
+    """Muestra lista completa de estudiantes - VERSIÓN CORREGIDA."""
     
     # Selector de orden
     orden = st.selectbox(
         "Ordenar por:",
-        ["Estudiante (A-Z)", "Asistencia % (Ascendente)", "Asistencia % (Descendente)"],
+        ["Estudiante (A-Z)", "Estudiante (Z-A)", 
+         "Asistencia % (Ascendente)", "Asistencia % (Descendente)",
+         "Presentes (Mayor a menor)", "Ausentes (Mayor a menor)"],
         key=f"orden_{curso_nombre}"
     )
     
     # Aplicar orden
-    if orden == "Asistencia % (Ascendente)":
+    if orden == "Estudiante (A-Z)":
+        df = df.sort_values('Estudiante')
+    elif orden == "Estudiante (Z-A)":
+        df = df.sort_values('Estudiante', ascending=False)
+    elif orden == "Asistencia % (Ascendente)":
         df = df.sort_values('Asistencia %')
     elif orden == "Asistencia % (Descendente)":
         df = df.sort_values('Asistencia %', ascending=False)
-    else:
-        df = df.sort_values('Estudiante')
+    elif orden == "Presentes (Mayor a menor)":
+        df = df.sort_values('Presente', ascending=False)
+    elif orden == "Ausentes (Mayor a menor)":
+        df = df.sort_values('Ausente', ascending=False)
     
-    # Mostrar tabla
+    # Mostrar tabla con formato mejorado
     st.dataframe(
-        df,
+        df[['Estudiante', 'Asistencia %', 'Presente', 'Ausente', 'Total Clases', 'Estado']],
         use_container_width=True,
         height=500,
         column_config={
+            "Estudiante": st.column_config.TextColumn(
+                "👤 Estudiante",
+                width="large",
+                help="Nombre del estudiante"
+            ),
             "Asistencia %": st.column_config.ProgressColumn(
-                "Asistencia %",
+                "📊 Asistencia",
                 format="%.1f%%",
                 min_value=0,
                 max_value=100,
+                width="medium",
+                help="Porcentaje de asistencia"
+            ),
+            "Presente": st.column_config.NumberColumn(
+                "✅ Presente",
+                width="small",
+                help="Clases presentes"
+            ),
+            "Ausente": st.column_config.NumberColumn(
+                "❌ Ausente",
+                width="small",
+                help="Clases ausentes"
+            ),
+            "Total Clases": st.column_config.NumberColumn(
+                "📅 Total",
+                width="small",
+                help="Total de clases programadas"
             ),
             "Estado": st.column_config.TextColumn(
-                "Estado",
-                help="✅ ≥70% Adecuado | ⚠️ 50-69% Bajo | ❌ <50% Crítico"
+                "🎯 Estado",
+                width="small",
+                help="🏆 ≥85% Excelente | ✅ 70-84% Adecuado | ⚠️ 50-69% Bajo | ❌ <50% Crítico"
             )
         }
     )
     
+    # Mostrar estadísticas rápidas
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Estudiantes", len(df))
+    with col2:
+        st.metric("Asistencia Promedio", f"{df['Asistencia %'].mean():.1f}%")
+    with col3:
+        st.metric("Total Clases", df['Total Clases'].iloc[0] if len(df) > 0 else 0)
+    
     # Botones de exportación
     st.subheader("📤 Exportar Datos")
-    col1, col2 = st.columns(2)
+    col_export1, col_export2, col_export3 = st.columns(3)
     
-    with col1:
-        if st.button("📥 Exportar a CSV", use_container_width=True, key=f"csv_{curso_nombre}"):
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Descargar CSV",
-                data=csv,
-                file_name=f"asistencia_{curso_nombre}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+    with col_export1:
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📄 Descargar CSV",
+            data=csv,
+            file_name=f"asistencia_completa_{curso_nombre}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"csv_{curso_nombre}"
+        )
     
-    with col2:
-        if st.button("📊 Exportar a Excel", use_container_width=True, key=f"excel_{curso_nombre}"):
-            excel_data = export_to_excel(df, curso_nombre)
-            st.download_button(
-                label="Descargar Excel",
-                data=excel_data,
-                file_name=f"asistencia_{curso_nombre}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+    with col_export2:
+        excel_data = export_to_excel(df, f"asistencia_{curso_nombre}")
+        st.download_button(
+            label="📊 Descargar Excel",
+            data=excel_data,
+            file_name=f"asistencia_{curso_nombre}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"excel_{curso_nombre}"
+        )
+    
+    with col_export3:
+        # Opción para imprimir
+        if st.button("🖨️ Generar PDF", use_container_width=True, key=f"pdf_{curso_nombre}"):
+            st.info("🔧 Función de PDF en desarrollo")
+
+# ... (el resto del código se mantiene igual desde _show_reportes_tab en adelante) ...
 
 def _show_reportes_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
     """Tab de generación de reportes."""
