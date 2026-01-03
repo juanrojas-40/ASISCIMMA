@@ -859,3 +859,216 @@ def get_sheets_manager() -> GoogleSheetsManager:
     Útil para importaciones rápidas.
     """
     return GoogleSheetsManager()
+
+# Agrega al final del archivo google_sheets.py, después de la clase GoogleSheetsManager
+
+# ===== FUNCIONES DE CONVENIENCIA PARA IMPORTS DIRECTOS =====
+
+def get_alumnos_data() -> pd.DataFrame:
+    """
+    Obtiene datos de alumnos como DataFrame.
+    Función de conveniencia para importación directa.
+    """
+    try:
+        manager = GoogleSheetsManager()
+        sheet_ids = manager.get_sheet_ids()
+        
+        if not sheet_ids or "clases" not in sheet_ids:
+            return pd.DataFrame()
+        
+        # Cargar cursos
+        cursos = manager.load_courses()
+        if not cursos:
+            return pd.DataFrame()
+        
+        # Transformar a DataFrame
+        alumnos_data = []
+        
+        for curso_nombre, curso_info in cursos.items():
+            for estudiante in curso_info.get("estudiantes", []):
+                alumnos_data.append({
+                    "nombre": estudiante.split()[0] if " " in estudiante else estudiante,
+                    "apellido": estudiante.split()[-1] if " " in estudiante else "",
+                    "nombre_completo": estudiante,
+                    "curso": curso_nombre,
+                    "nombre_curso": curso_nombre,
+                    "id_curso": curso_nombre,  # Puedes generar un ID único si necesitas
+                    "profesor": curso_info.get("profesor", ""),
+                    "sede": curso_info.get("sede", ""),
+                    "asignatura": curso_info.get("asignatura", ""),
+                    "estado": "Activo",  # Valor por defecto
+                    "fecha_inscripcion": datetime.now().strftime("%Y-%m-%d")
+                })
+        
+        return pd.DataFrame(alumnos_data)
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo datos de alumnos: {e}")
+        return pd.DataFrame()
+
+def get_cursos_data() -> pd.DataFrame:
+    """
+    Obtiene datos de cursos como DataFrame.
+    Función de conveniencia para importación directa.
+    """
+    try:
+        manager = GoogleSheetsManager()
+        cursos = manager.load_courses()
+        
+        if not cursos:
+            return pd.DataFrame()
+        
+        # Transformar a DataFrame
+        cursos_data = []
+        
+        for curso_nombre, curso_info in cursos.items():
+            cursos_data.append({
+                "id_curso": curso_nombre,
+                "nombre_curso": curso_nombre,
+                "codigo": curso_nombre.replace(" ", "_").upper(),
+                "profesor": curso_info.get("profesor", ""),
+                "nombre_profesor": curso_info.get("profesor", ""),
+                "id_profesor": 0,  # Necesitarías mapear esto si tienes IDs
+                "sede": curso_info.get("sede", ""),
+                "asignatura": curso_info.get("asignatura", ""),
+                "horario": "No especificado",
+                "aula": "Virtual",
+                "capacidad_maxima": len(curso_info.get("estudiantes", [])),
+                "estudiantes_inscritos": len(curso_info.get("estudiantes", [])),
+                "estado": "Activo",
+                "fechas_programadas": len(curso_info.get("fechas", [])),
+                "ultima_actualizacion": curso_info.get("last_updated", "")
+            })
+        
+        return pd.DataFrame(cursos_data)
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo datos de cursos: {e}")
+        return pd.DataFrame()
+
+def get_profesores_data() -> pd.DataFrame:
+    """
+    Obtiene datos de profesores como DataFrame.
+    """
+    try:
+        manager = GoogleSheetsManager()
+        cursos = manager.load_courses()
+        
+        if not cursos:
+            return pd.DataFrame()
+        
+        # Extraer profesores únicos
+        profesores_set = set()
+        for curso_info in cursos.values():
+            profesor = curso_info.get("profesor", "")
+            if profesor:
+                profesores_set.add(profesor)
+        
+        # Crear DataFrame
+        profesores_data = []
+        for i, profesor in enumerate(sorted(profesores_set)):
+            # Contar cursos del profesor
+            cursos_profesor = sum(1 for c in cursos.values() 
+                                if c.get("profesor", "").lower() == profesor.lower())
+            
+            profesores_data.append({
+                "id": i + 1,
+                "id_profesor": i + 101,  # IDs que empiezan en 101
+                "nombre": profesor,
+                "especialidad": "No especificada",
+                "email": f"{profesor.lower().replace(' ', '.')}@asis-cimma.com",
+                "telefono": "",
+                "estado": "Activo",
+                "cursos_asignados": cursos_profesor,
+                "fecha_contratacion": "2024-01-01"
+            })
+        
+        return pd.DataFrame(profesores_data)
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo datos de profesores: {e}")
+        return pd.DataFrame()
+
+def get_usuarios_data() -> pd.DataFrame:
+    """
+    Obtiene datos de usuarios del sistema.
+    """
+    # Esto sería de tu base de datos de usuarios
+    # Por ahora datos de ejemplo
+    usuarios = [
+        {
+            "id": 1,
+            "username": "admin",
+            "nombre": "Administrador",
+            "email": "admin@asis-cimma.com",
+            "role": "admin",
+            "estado": "Activo",
+            "ultimo_login": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fecha_registro": "2024-01-01"
+        },
+        {
+            "id": 2,
+            "username": "profesor",
+            "nombre": "Profesor Demo",
+            "email": "profesor@demo.com",
+            "role": "profesor",
+            "estado": "Activo",
+            "ultimo_login": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fecha_registro": "2024-01-01"
+        },
+        {
+            "id": 3,
+            "username": "secretaria",
+            "nombre": "Secretaria Demo",
+            "email": "secretaria@demo.com",
+            "role": "secretaria",
+            "estado": "Activo",
+            "ultimo_login": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fecha_registro": "2024-01-01"
+        }
+    ]
+    
+    return pd.DataFrame(usuarios)
+
+def get_finanzas_data() -> pd.DataFrame:
+    """
+    Obtiene datos financieros (ejemplo).
+    En producción, esto vendría de una hoja de cálculo específica.
+    """
+    # Datos de ejemplo
+    finanzas = [
+        {
+            "id": 1,
+            "fecha": "2024-01-15",
+            "descripcion": "Matrícula Estudiante A",
+            "monto": 150000,
+            "tipo": "Ingreso",
+            "estado": "Pagado",
+            "curso": "Matemáticas Avanzadas",
+            "sede": "SAN PEDRO"
+        },
+        {
+            "id": 2,
+            "fecha": "2024-01-16",
+            "descripcion": "Pago Profesor",
+            "monto": -500000,
+            "tipo": "Egreso",
+            "estado": "Pagado",
+            "curso": "Todos",
+            "sede": "TODAS"
+        }
+    ]
+    
+    # Convertir fechas
+    for item in finanzas:
+        item["fecha"] = datetime.strptime(item["fecha"], "%Y-%m-%d")
+    
+    return pd.DataFrame(finanzas)
+
+# Función helper para compatibilidad
+def get_google_sheets_manager() -> GoogleSheetsManager:
+    """Retorna una instancia de GoogleSheetsManager."""
+    return GoogleSheetsManager()
+
+# Alias para compatibilidad
+GoogleSheetsManager = GoogleSheetsManager
