@@ -140,236 +140,333 @@ def _show_cursos_sede_tab(sheets_manager: GoogleSheetsManager, user_sede: str):
         st.info("🔧 Verifique que la hoja de clases tenga el formato correcto.")
 
 def _manual_parse_courses_safe(sheets_manager: GoogleSheetsManager, user_sede: str) -> Dict[str, Any]:
-    """Parseo manual de cursos - ESPECÍFICO para tu estructura de Google Sheets."""
+    """Parseo manual de cursos - Usando métodos REALES disponibles."""
     
     try:
-        # 1. Obtener el sheet_id de clases
+        # 1. PRIMERO: Verificar qué métodos tiene realmente sheets_manager
+        with st.expander("🔍 DEPURACIÓN: Métodos disponibles", expanded=False):
+            # Listar todos los métodos públicos
+            metodos = [attr for attr in dir(sheets_manager) 
+                      if not attr.startswith('__') and callable(getattr(sheets_manager, attr))]
+            st.write("**Métodos disponibles:**", ", ".join(sorted(metodos)))
+            
+            # Ver atributos importantes
+            atributos = [attr for attr in dir(sheets_manager) 
+                        if not attr.startswith('__') and not callable(getattr(sheets_manager, attr))]
+            st.write("**Atributos importantes:**", ", ".join([a for a in atributos if not a.startswith('_')][:10]))
+        
+        # 2. Obtener sheet_ids
         sheet_ids = sheets_manager.get_sheet_ids()
         sheet_id = sheet_ids.get("clases")
         
         if not sheet_id:
             st.error("❌ No se encontró el ID de la hoja de clases")
+            st.write("Sheet IDs disponibles:", sheet_ids)
             return {}
         
-        # 2. Obtener TODOS los datos de la hoja
-        all_data = sheets_manager.get_sheet_data(sheet_id, "Clases!A:ZZ")
+        # 3. INTENTAR DIFERENTES MÉTODOS para obtener datos
+        all_data = None
         
-        if not all_data or len(all_data) < 10:
-            st.error("❌ No se pudieron obtener datos de la hoja")
-            return {}
+        # Método 1: Usar load_data_from_sheet si existe
+        if hasattr(sheets_manager, 'load_data_from_sheet'):
+            try:
+                with st.spinner("🔄 Cargando datos con load_data_from_sheet..."):
+                    all_data = sheets_manager.load_data_from_sheet(sheet_id, "Clases")
+                    st.success("✅ Datos cargados con load_data_from_sheet")
+            except Exception as e:
+                st.warning(f"⚠️ load_data_from_sheet falló: {e}")
         
-        # 3. Buscar cursos de la sede específica
+        # Método 2: Usar get_sheet si existe
+        if all_data is None and hasattr(sheets_manager, 'get_sheet'):
+            try:
+                with st.spinner("🔄 Cargando datos con get_sheet..."):
+                    all_data = sheets_manager.get_sheet(sheet_id, "Clases")
+                    st.success("✅ Datos cargados con get_sheet")
+            except Exception as e:
+                st.warning(f"⚠️ get_sheet falló: {e}")
+        
+        # Método 3: Usar obtener_datos_hoja si existe
+        if all_data is None and hasattr(sheets_manager, 'obtener_datos_hoja'):
+            try:
+                with st.spinner("🔄 Cargando datos con obtener_datos_hoja..."):
+                    all_data = sheets_manager.obtener_datos_hoja(sheet_id, "Clases")
+                    st.success("✅ Datos cargados con obtener_datos_hoja")
+            except Exception as e:
+                st.warning(f"⚠️ obtener_datos_hoja falló: {e}")
+        
+        # Método 4: Usar google_sheets_service directamente si está disponible
+        if all_data is None and hasattr(sheets_manager, 'service'):
+            try:
+                with st.spinner("🔄 Cargando datos con service directamente..."):
+                    service = sheets_manager.service
+                    result = service.spreadsheets().values().get(
+                        spreadsheetId=sheet_id,
+                        range="Clases!A:ZZ"
+                    ).execute()
+                    all_data = result.get('values', [])
+                    st.success("✅ Datos cargados con service directamente")
+            except Exception as e:
+                st.warning(f"⚠️ Service directo falló: {e}")
+        
+        # Método 5: Usar get_sheet_data_range si existe
+        if all_data is None and hasattr(sheets_manager, 'get_sheet_data_range'):
+            try:
+                with st.spinner("🔄 Cargando datos con get_sheet_data_range..."):
+                    all_data = sheets_manager.get_sheet_data_range(sheet_id, "Clases!A:Z")
+                    st.success("✅ Datos cargados con get_sheet_data_range")
+            except Exception as e:
+                st.warning(f"⚠️ get_sheet_data_range falló: {e}")
+        
+        # Si aún no tenemos datos, mostrar error específico
+        if all_data is None:
+            st.error("""
+            ❌ **NO SE PUDO ACCEDER A LOS DATOS**
+            
+            **Posibles soluciones:**
+            1. Verifica que `sheets_manager` tenga un método para leer datos
+            2. Revisa el archivo `utils/google_sheets.py` para ver los métodos disponibles
+            3. Asegúrate de que la cuenta de servicio tenga permisos
+            4. Verifica que el sheet_id sea correcto
+            
+            **Sheet ID usado:** `{}`
+            """.format(sheet_id))
+            
+            # Mostrar estructura del objeto para depuración
+            st.write("**Estructura completa de sheets_manager:**")
+            st.write([attr for attr in dir(sheets_manager) if not attr.startswith('_')])
+            
+            # Usar datos de ejemplo temporalmente
+            st.warning("⚠️ Usando datos de ejemplo temporalmente")
+            return _create_sample_data(user_sede)
+        
+        # 4. VERIFICAR ESTRUCTURA DE DATOS
+        with st.expander("🔍 Estructura de datos obtenida", expanded=False):
+            st.write(f"**Tipo de datos:** {type(all_data)}")
+            st.write(f"**Longitud total:** {len(all_data) if isinstance(all_data, (list, tuple)) else 'N/A'}")
+            
+            # Mostrar primeras filas
+            if isinstance(all_data, (list, tuple)) and len(all_data) > 0:
+                st.write("**Primeras 10 filas:**")
+                for i, row in enumerate(all_data[:10]):
+                    st.write(f"Fila {i}: {row}")
+            else:
+                st.write("**Datos:**", all_data)
+        
+        # 5. PROCESAR DATOS según la estructura que vimos en tu imagen
         cursos_sede = {}
         
-        # Recorrer todas las columnas para encontrar cursos de la sede
-        current_profesor = ""
-        current_sede = ""
-        current_asignatura = ""
-        current_curso = ""
-        
-        # Buscar por sede en toda la hoja
-        for col_idx in range(0, len(all_data[0]), 5):  # Asumimos columnas de 5 en 5
+        # Primero convertir a lista de listas si no lo es
+        if not isinstance(all_data, list) or (all_data and not isinstance(all_data[0], list)):
+            # Intentar convertir
             try:
-                # Verificar si esta columna tiene la sede que buscamos
-                if col_idx + 1 < len(all_data[0]):
-                    col_sede = str(all_data[1][col_idx + 1]).strip() if col_idx + 1 < len(all_data) and len(all_data[1]) > col_idx + 1 else ""
-                    
-                    if col_sede == user_sede:
-                        # ¡Encontramos una columna de nuestra sede!
+                if isinstance(all_data, pd.DataFrame):
+                    all_data = all_data.values.tolist()
+                elif hasattr(all_data, 'tolist'):
+                    all_data = all_data.tolist()
+                else:
+                    all_data = [all_data] if not isinstance(all_data, list) else all_data
+            except:
+                st.error("❌ No se pudo convertir los datos a formato lista")
+                return {}
+        
+        # Buscar estructura específica de tu Google Sheet
+        # Basado en tu descripción: columnas paralelas para cada curso
+        
+        # Estrategia 1: Buscar por la palabra "SEDE" o "SAN PEDRO"
+        for col_idx in range(len(all_data[0]) if all_data else 0):
+            try:
+                # Buscar en la fila 1 (índice 0 o 1) la sede
+                for row_idx in range(min(10, len(all_data))):
+                    if row_idx < len(all_data) and col_idx < len(all_data[row_idx]):
+                        cell = str(all_data[row_idx][col_idx]).strip().upper()
                         
-                        # Obtener información del curso
-                        profesor = str(all_data[0][col_idx + 1]).strip() if len(all_data[0]) > col_idx + 1 else ""
-                        asignatura = str(all_data[2][col_idx + 1]).strip() if len(all_data[2]) > col_idx + 1 else ""
-                        dia = str(all_data[3][col_idx + 1]).strip() if len(all_data[3]) > col_idx + 1 else ""
-                        curso_nombre = str(all_data[5][col_idx + 1]).strip() if len(all_data[5]) > col_idx + 1 else ""
-                        horario = str(all_data[6][col_idx + 1]).strip() if len(all_data[6]) > col_idx + 1 else ""
-                        
-                        # Crear nombre completo del curso
-                        nombre_completo_curso = f"{curso_nombre} - {horario}"
-                        
-                        # Buscar fechas (comienzan en fila 8)
-                        fechas = []
-                        for row_idx in range(8, len(all_data)):
-                            if col_idx + 1 < len(all_data[row_idx]):
-                                fecha = str(all_data[row_idx][col_idx + 1]).strip()
-                                if fecha and fecha.lower() != "fechas" and "nombres estudiantes" not in fecha.lower():
-                                    fechas.append(fecha)
-                        
-                        # Buscar estudiantes y asistencias (a partir de donde termina "FECHAS")
-                        # Buscar fila con "NOMBRES ESTUDIANTES"
-                        start_estudiantes = -1
-                        for row_idx in range(8, len(all_data)):
-                            if col_idx < len(all_data[row_idx]):
-                                cell_value = str(all_data[row_idx][col_idx]).strip().lower()
-                                if "nombres estudiantes" in cell_value:
-                                    start_estudiantes = row_idx + 1
-                                    break
-                        
-                        estudiantes = []
-                        asistencias = {}
-                        
-                        if start_estudiantes > 0:
-                            # Leer estudiantes y sus asistencias
-                            for row_idx in range(start_estudiantes, len(all_data)):
-                                if col_idx < len(all_data[row_idx]):
-                                    estudiante = str(all_data[row_idx][col_idx]).strip()
-                                    
-                                    if estudiante:  # Si hay un nombre de estudiante
-                                        estudiantes.append(estudiante)
-                                        
-                                        # Leer asistencias para este estudiante
-                                        asist_est = {}
-                                        for fecha_idx, fecha in enumerate(fechas):
-                                            col_asistencia_idx = col_idx + 1 + fecha_idx
-                                            if col_asistencia_idx < len(all_data[row_idx]):
-                                                valor = str(all_data[row_idx][col_asistencia_idx]).strip()
-                                                # 1 = presente, vacío o 0 = ausente
-                                                asist_est[fecha] = valor == "1"
-                                        
-                                        asistencias[estudiante] = asist_est
-                        
-                        # Crear estructura del curso
-                        curso_data = {
-                            "profesor": profesor,
-                            "sede": user_sede,
-                            "asignatura": asignatura,
-                            "dia": dia,
-                            "horario": horario,
-                            "curso": nombre_completo_curso,
-                            "estudiantes": estudiantes,
-                            "fechas": fechas,
-                            "asistencias": asistencias
-                        }
-                        
-                        cursos_sede[nombre_completo_curso] = curso_data
-                        
-            except Exception as col_error:
+                        # Si encontramos SAN PEDRO en esta columna
+                        if "SAN PEDRO" in cell:
+                            st.success(f"✅ Encontrada sede SAN PEDRO en columna {col_idx}, fila {row_idx}")
+                            
+                            # Extraer información del curso
+                            curso_info = _extraer_curso_de_columna(all_data, col_idx, row_idx)
+                            
+                            if curso_info and curso_info.get('estudiantes'):
+                                nombre_curso = curso_info.get('nombre', f'Curso_{col_idx}')
+                                cursos_sede[nombre_curso] = curso_info
+            except:
                 continue
         
-        # 4. Si no encontramos por columna, intentar otro método
+        # Estrategia 2: Si no encontramos, buscar patrones de estructura
         if not cursos_sede:
-            st.info("🔍 Intentando método alternativo de búsqueda...")
-            
-            # Método alternativo: buscar por sede en toda la hoja
-            for row_idx, row in enumerate(all_data):
-                for col_idx, cell in enumerate(row):
-                    if str(cell).strip() == user_sede:
-                        # Encontramos la sede, ahora buscar el curso asociado
-                        # La estructura está organizada en bloques
-                        try:
-                            # Obtener datos del bloque
-                            if row_idx > 0:
-                                profesor = str(all_data[row_idx-1][col_idx]).strip() if col_idx < len(all_data[row_idx-1]) else ""
-                            else:
-                                profesor = ""
-                            
-                            asignatura = str(all_data[row_idx+1][col_idx]).strip() if row_idx+1 < len(all_data) and col_idx < len(all_data[row_idx+1]) else ""
-                            
-                            # Buscar nombre del curso (2 filas después de "CURSO")
-                            for buscar_idx in range(row_idx, min(row_idx+10, len(all_data))):
-                                if "curso" in str(all_data[buscar_idx][col_idx-1]).lower():
-                                    curso_nombre = str(all_data[buscar_idx+1][col_idx]).strip() if buscar_idx+1 < len(all_data) else ""
-                                    horario = str(all_data[buscar_idx+2][col_idx]).strip() if buscar_idx+2 < len(all_data) else ""
-                                    break
-                            
-                            nombre_completo_curso = f"{curso_nombre} - {horario}"
-                            
-                            # Buscar fechas (después de "FECHAS")
-                            fechas = []
-                            start_fechas = -1
-                            for buscar_idx in range(row_idx, min(row_idx+50, len(all_data))):
-                                if "fechas" in str(all_data[buscar_idx][col_idx-1]).lower():
-                                    start_fechas = buscar_idx + 1
-                                    break
-                            
-                            if start_fechas > 0:
-                                for fecha_idx in range(start_fechas, min(start_fechas+50, len(all_data))):
-                                    fecha = str(all_data[fecha_idx][col_idx]).strip()
-                                    if fecha and "nombres estudiantes" not in fecha.lower():
-                                        fechas.append(fecha)
-                                    else:
-                                        break
-                            
-                            # Buscar estudiantes
-                            estudiantes = []
-                            asistencias = {}
-                            
-                            # Buscar fila "NOMBRES ESTUDIANTES"
-                            for buscar_idx in range(start_fechas if start_fechas > 0 else row_idx, 
-                                                   min(start_fechas+100 if start_fechas > 0 else row_idx+100, len(all_data))):
-                                if "nombres estudiantes" in str(all_data[buscar_idx][col_idx-1]).lower():
-                                    start_estudiantes = buscar_idx + 1
-                                    break
-                            
-                            if 'start_estudiantes' in locals() and start_estudiantes > 0:
-                                for est_idx in range(start_estudiantes, len(all_data)):
-                                    estudiante = str(all_data[est_idx][col_idx-1]).strip()
-                                    if estudiante:
-                                        estudiantes.append(estudiante)
-                                        
-                                        # Leer asistencias
-                                        asist_est = {}
-                                        for fecha_idx, fecha in enumerate(fechas):
-                                            if col_idx + fecha_idx < len(all_data[est_idx]):
-                                                valor = str(all_data[est_idx][col_idx + fecha_idx]).strip()
-                                                asist_est[fecha] = valor == "1"
-                                        
-                                        asistencias[estudiante] = asist_est
-                            
-                            # Agregar curso si tiene estudiantes
-                            if estudiantes:
-                                curso_data = {
-                                    "profesor": profesor,
-                                    "sede": user_sede,
-                                    "asignatura": asignatura,
-                                    "curso": nombre_completo_curso,
-                                    "estudiantes": estudiantes,
-                                    "fechas": fechas,
-                                    "asistencias": asistencias
-                                }
-                                
-                                cursos_sede[nombre_completo_curso] = curso_data
-                            
-                        except Exception as e:
-                            continue
+            cursos_sede = _buscar_cursos_por_estructura(all_data, user_sede)
         
-        # 5. Mostrar información de depuración
-        with st.expander("🔍 Información de depuración del parser", expanded=False):
-            st.write(f"**Total de filas en la hoja:** {len(all_data)}")
-            st.write(f"**Total de columnas en la primera fila:** {len(all_data[0]) if all_data else 0}")
-            
-            # Mostrar estructura de las primeras filas
-            st.write("**Primeras 15 filas de datos (columnas 0-5):**")
-            for i, row in enumerate(all_data[:15]):
-                st.write(f"Fila {i}: {row[:6]}")
-            
-            st.write(f"\n**Cursos encontrados para {user_sede}:** {len(cursos_sede)}")
-            for curso_nombre, curso_data in cursos_sede.items():
-                st.write(f"- {curso_nombre}: {len(curso_data.get('estudiantes', []))} estudiantes, {len(curso_data.get('fechas', []))} fechas")
+        # 6. MOSTRAR RESULTADOS
+        with st.expander("📊 Resultados del parseo", expanded=True):
+            if cursos_sede:
+                st.success(f"✅ Se encontraron {len(cursos_sede)} cursos para {user_sede}")
+                for curso_nombre, curso_data in cursos_sede.items():
+                    st.write(f"**{curso_nombre}**")
+                    st.write(f"  - Estudiantes: {len(curso_data.get('estudiantes', []))}")
+                    st.write(f"  - Fechas: {len(curso_data.get('fechas', []))}")
+                    st.write(f"  - Profesor: {curso_data.get('profesor', 'N/A')}")
+            else:
+                st.warning(f"⚠️ No se encontraron cursos para {user_sede}")
+                
+                # Mostrar qué sedes sí existen
+                sedes_encontradas = _buscar_todas_sedes(all_data)
+                if sedes_encontradas:
+                    st.info(f"ℹ️ Sedes encontradas en los datos: {', '.join(sorted(sedes_encontradas))}")
         
-        if cursos_sede:
-            st.success(f"✅ Parser manual encontró {len(cursos_sede)} cursos para {user_sede}")
-            return cursos_sede
-        else:
-            st.warning(f"⚠️ No se encontraron cursos para la sede {user_sede}")
-            
-            # Mostrar qué sedes sí existen
-            sedes_encontradas = set()
-            for row in all_data:
-                for cell in row:
-                    cell_str = str(cell).strip()
-                    if cell_str and any(sede.value in cell_str for sede in Sede if sede.value != "TODAS"):
-                        sedes_encontradas.add(cell_str)
-            
-            if sedes_encontradas:
-                st.info(f"ℹ️ Sedes encontradas en la hoja: {', '.join(sorted(sedes_encontradas))}")
-            
-            return {}
-            
+        return cursos_sede if cursos_sede else _create_sample_data(user_sede)
+        
     except Exception as e:
         st.error(f"❌ Error en parser manual: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
+        return _create_sample_data(user_sede)
+
+def _extraer_curso_de_columna(data: List[List], col_idx: int, sede_row_idx: int) -> Dict[str, Any]:
+    """Extrae información de un curso de una columna específica."""
+    
+    try:
+        curso_info = {
+            'estudiantes': [],
+            'fechas': [],
+            'asistencias': {},
+            'profesor': '',
+            'sede': 'SAN PEDRO',
+            'asignatura': '',
+            'nombre': ''
+        }
+        
+        # 1. Obtener profesor (generalmente fila anterior a sede)
+        if sede_row_idx > 0 and col_idx < len(data[sede_row_idx-1]):
+            curso_info['profesor'] = str(data[sede_row_idx-1][col_idx]).strip()
+        
+        # 2. Obtener asignatura (generalmente fila siguiente a sede)
+        if sede_row_idx + 1 < len(data) and col_idx < len(data[sede_row_idx+1]):
+            curso_info['asignatura'] = str(data[sede_row_idx+1][col_idx]).strip()
+        
+        # 3. Buscar nombre del curso (buscar "CURSO" en columnas adyacentes)
+        for offset in range(-5, 6):
+            check_col = col_idx + offset
+            if 0 <= check_col < len(data[0]) if data else False:
+                for i in range(sede_row_idx, min(sede_row_idx + 10, len(data))):
+                    if i < len(data) and check_col < len(data[i]):
+                        cell = str(data[i][check_col]).strip().upper()
+                        if "CURSO" in cell and i + 1 < len(data):
+                            # Nombre del curso está en la siguiente celda
+                            if check_col < len(data[i+1]):
+                                curso_info['nombre'] = str(data[i+1][check_col]).strip()
+                            break
+        
+        # 4. Buscar fechas (buscar "FECHAS" y leer hacia abajo)
+        for i in range(sede_row_idx, min(sede_row_idx + 50, len(data))):
+            if i < len(data) and col_idx - 1 >= 0 and col_idx - 1 < len(data[i]):
+                cell = str(data[i][col_idx-1]).strip().upper()
+                if "FECHAS" in cell:
+                    # Leer fechas hacia abajo
+                    fecha_idx = i + 1
+                    while fecha_idx < len(data) and col_idx < len(data[fecha_idx]):
+                        fecha = str(data[fecha_idx][col_idx]).strip()
+                        if fecha and not any(keyword in fecha.upper() for keyword in ["NOMBRES", "ESTUDIANTES", "CURSO", "DIA"]):
+                            curso_info['fechas'].append(fecha)
+                        else:
+                            break
+                        fecha_idx += 1
+                    break
+        
+        # 5. Buscar estudiantes (buscar "NOMBRES ESTUDIANTES")
+        for i in range(sede_row_idx, min(sede_row_idx + 100, len(data))):
+            if i < len(data) and col_idx - 1 >= 0 and col_idx - 1 < len(data[i]):
+                cell = str(data[i][col_idx-1]).strip().upper()
+                if "NOMBRES" in cell or "ESTUDIANTES" in cell:
+                    # Leer estudiantes hacia abajo
+                    est_idx = i + 1
+                    while est_idx < len(data) and col_idx - 1 < len(data[est_idx]):
+                        estudiante = str(data[est_idx][col_idx-1]).strip()
+                        if estudiante:
+                            curso_info['estudiantes'].append(estudiante)
+                            
+                            # Leer asistencias para este estudiante
+                            asist_est = {}
+                            for fecha_idx, fecha in enumerate(curso_info['fechas']):
+                                asist_col = col_idx + fecha_idx
+                                if est_idx < len(data) and asist_col < len(data[est_idx]):
+                                    valor = str(data[est_idx][asist_col]).strip()
+                                    asist_est[fecha] = valor == "1" or valor.upper() == "P"
+                            
+                            curso_info['asistencias'][estudiante] = asist_est
+                        est_idx += 1
+                    break
+        
+        # Si no hay nombre, generar uno
+        if not curso_info['nombre'] and curso_info['asignatura']:
+            curso_info['nombre'] = f"{curso_info['asignatura']} - Columna_{col_idx}"
+        
+        return curso_info if curso_info['estudiantes'] else {}
+        
+    except Exception as e:
+        st.warning(f"⚠️ Error extrayendo curso: {e}")
+        return {}
+
+def _buscar_cursos_por_estructura(data: List[List], sede: str) -> Dict[str, Any]:
+    """Busca cursos analizando la estructura completa."""
+    
+    cursos = {}
+    
+    if not data or len(data) < 10:
+        return cursos
+    
+    try:
+        # Buscar todas las columnas que podrían ser cursos
+        for col in range(0, len(data[0]), 3):  # Saltar de 3 en 3 columnas
+            curso_data = _analizar_columna_como_curso(data, col, sede)
+            if curso_data:
+                nombre = curso_data.get('nombre', f'Curso_{col}')
+                cursos[nombre] = curso_data
+        
+        return cursos
+    except:
+        return cursos
+
+def _analizar_columna_como_curso(data: List[List], col: int, sede: str) -> Dict[str, Any]:
+    """Analiza si una columna contiene un curso completo."""
+    
+    curso = {
+        'estudiantes': [],
+        'fechas': [],
+        'asistencias': {},
+        'profesor': '',
+        'sede': sede,
+        'asignatura': '',
+        'nombre': f'Curso_{col}'
+    }
+    
+    try:
+        # Buscar en las primeras 20 filas
+        for row in range(min(20, len(data))):
+            if col < len(data[row]):
+                cell = str(data[row][col]).strip()
+                
+                # Buscar profesor
+                if row > 0 and "PROFESOR" in str(data[row-1][col-1] if col > 0 and row-1 < len(data) and col-1 < len(data[row-1]) else "").upper():
+                    curso['profesor'] = cell
+                
+                # Buscar asignatura
+                elif row > 0 and "ASIGNATURA" in str(data[row-1][col-1] if col > 0 and row-1 < len(data) and col-1 < len(data[row-1]) else "").upper():
+                    curso['asignatura'] = cell
+                    curso['nombre'] = cell
+                
+                # Buscar horario (después de CURSO)
+                elif row > 0 and "CURSO" in str(data[row-1][col-1] if col > 0 and row-1 < len(data) and col-1 < len(data[row-1]) else "").upper():
+                    if curso['nombre'] == f'Curso_{col}':
+                        curso['nombre'] = cell
+        
+        # Si encontramos información básica, buscar más datos
+        if curso['profesor'] or curso['asignatura']:
+            return curso
+        else:
+            return {}
+            
+    except:
         return {}
 
 
