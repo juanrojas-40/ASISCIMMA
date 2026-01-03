@@ -1,11 +1,6 @@
 # app.py - Punto de entrada principal del sistema de asistencia CIMMA
+
 import streamlit as st
-import sys
-import os
-import pandas as pd
-from datetime import datetime
-import io
-import time  # <-- AÑADIDO
 
 # ============================================================================
 # CONFIGURACIÓN INICIAL - DEBE SER EL PRIMER COMANDO DE STREAMLIT
@@ -78,6 +73,102 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+
+
+import sys
+import os
+import pandas as pd
+from datetime import datetime
+import io
+import time  # <-- AÑADIDO
+
+
+# ============================================================================
+# CLASE AuthManager LOCAL (para compatibilidad)
+# ============================================================================
+class AuthManager:
+    """
+    Clase wrapper para mantener compatibilidad con el código existente.
+    Envuelve las funciones de auth.py en una interfaz de clase.
+    """
+    
+    def __init__(self, session_timeout: int = 3600):
+        self.session_timeout = session_timeout
+    
+    def login(self, username: str, password: str, role: str) -> bool:
+        """Wrapper para authenticate_user con manejo de rol"""
+        try:
+            # Autenticar usuario
+            success = authenticate_user(username, password)
+            
+            if success:
+                # Obtener usuario y verificar rol
+                user = get_current_user()
+                if user and user.get('role', '').lower() == role.split()[0].lower():
+                    return True
+                else:
+                    # Si el rol no coincide, hacer logout
+                    logout_user()
+                    return False
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error en login: {e}")
+            return False
+    
+    def check_secrets(self) -> bool:
+        """Verifica que los secrets estén configurados"""
+        try:
+            # Verificar secrets básicos
+            required_secrets = [
+                "google.credentials",
+                "google.asistencia_sheet_id", 
+                "google.clases_sheet_id"
+            ]
+            
+            for secret in required_secrets:
+                if not self._get_nested_secret(secret):
+                    return False
+            
+            return True
+            
+        except:
+            return False
+    
+    def _get_nested_secret(self, key_path: str):
+        """Obtiene un valor anidado de secrets"""
+        keys = key_path.split('.')
+        value = st.secrets
+        
+        for key in keys:
+            if key in value:
+                value = value[key]
+            else:
+                return None
+        
+        return value
+    
+    # Métodos que envuelven funciones existentes
+    def get_current_user(self):
+        return get_current_user()
+    
+    def logout_user(self):
+        return logout_user()
+    
+    def is_authenticated(self):
+        return is_authenticated()
+    
+    def require_login(self, role=None):
+        return require_login(role)
+    
+    def show_login_form(self, redirect_after_login=None):
+        return show_login_form(redirect_after_login)
+    
+    def get_all_users(self):
+        return get_all_users()
+
 
 # ============================================================================
 # CONFIGURACIÓN DE PATH E IMPORTS
