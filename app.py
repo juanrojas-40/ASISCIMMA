@@ -314,6 +314,7 @@ def show_secretaria_dashboard(sheets_manager, email_manager):
     st.header(f"👩‍💼 Panel de Equipo Sede - {user_sede}")
     tab1, tab2, tab3 = st.tabs(["📋 Cursos de Sede", "📊 Reportes", "📧 Comunicaciones Masivas"])
     with tab1:
+        # ... (el contenido de tab1 se mantiene igual, no se modifica) ...
         st.subheader(f"🏫 Cursos de Sede: {user_sede}")
         try:
             with st.spinner("Cargando cursos..."):
@@ -428,6 +429,7 @@ def show_secretaria_dashboard(sheets_manager, email_manager):
             st.info("ℹ️ Verifique que la hoja de clases tenga el formato correcto.")
     
     with tab2:
+        # ... (el contenido de tab2 se mantiene igual) ...
         st.subheader("📊 Reportes de Asistencia")
         col1, col2 = st.columns(2)
         with col1:
@@ -581,7 +583,6 @@ Preuniversitario CIMMA
                     destinatarios = []
                     if opcion_envio == "📋 Todos los cursos de la sede":
                         todos = sheets_manager.get_all_emails_by_sede(user_sede)
-                        # Filtrar por la fecha del reporte aquí si es necesario
                         destinatarios = todos
                     elif opcion_envio == "🎯 Curso específico":
                         todos = sheets_manager.get_all_emails_by_sede(user_sede)
@@ -643,6 +644,7 @@ Preuniversitario CIMMA
                     st.info("ℹ️ Verifique la configuración de email en secrets.toml")
 
 def show_admin_dashboard(sheets_manager, email_manager):
+    # ... (el contenido de show_admin_dashboard se mantiene igual) ...
     st.header("👑 Panel de Administración")
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "👥 Usuarios", "⚙️ Configuración", "🔧 Sistema"])
     with tab1:
@@ -733,6 +735,7 @@ def export_to_excel(df, curso_nombre):
     return output.read()
 
 def generar_reporte_general(sede_nombre, sheets_manager):
+    """Genera un reporte general de la sede"""
     try:
         cursos = sheets_manager.load_courses_by_sede(sede_nombre)
         if not cursos:
@@ -741,6 +744,7 @@ def generar_reporte_general(sede_nombre, sheets_manager):
         for curso_nombre, curso_data in cursos.items():
             total_estudiantes = len(curso_data.get("estudiantes", []))
             total_clases = len(curso_data.get("fechas", []))
+            # Calcular asistencia promedio
             if total_estudiantes > 0 and total_clases > 0:
                 asistencias = curso_data.get("asistencias", {})
                 if asistencias:
@@ -753,6 +757,7 @@ def generar_reporte_general(sede_nombre, sheets_manager):
                     porcentaje_promedio = 0
             else:
                 porcentaje_promedio = 0
+            # Contar estudiantes con baja asistencia
             baja_asistencia = 0
             if curso_data.get("estudiantes"):
                 for estudiante in curso_data["estudiantes"]:
@@ -776,6 +781,7 @@ def generar_reporte_general(sede_nombre, sheets_manager):
         return []
 
 def generar_reporte_detallado(sede_nombre, sheets_manager):
+    """Genera un reporte detallado de asistencia"""
     try:
         cursos = sheets_manager.load_courses_by_sede(sede_nombre)
         if not cursos:
@@ -803,6 +809,7 @@ def generar_reporte_detallado(sede_nombre, sheets_manager):
         return []
 
 def generar_top_asistencia(sede_nombre, sheets_manager):
+    """Genera top 10 mejor asistencia de la sede"""
     try:
         reporte_detallado = generar_reporte_detallado(sede_nombre, sheets_manager)
         if not reporte_detallado:

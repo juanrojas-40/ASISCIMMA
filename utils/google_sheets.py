@@ -212,46 +212,58 @@ class GoogleSheetsManager:
             st.error(f"❌ Error cargando emails: {e}")
             return {}, {}
 
-    def get_all_emails_by_sede(self, sede_nombre: str) -> List[Dict[str, str]]:
-        # Usa load_emails() (que ya tiene caché y rate limiting)
-        sede_courses = self.load_courses_by_sede(sede_nombre)
-        emails_data, _ = self.load_emails()
-        result = []
-        for course_name, course_data in sede_courses.items():
-            for estudiante in course_data.get("estudiantes", []):
-                estudiante_key = estudiante.strip().lower()
-                if estudiante_key in emails_data:
-                    result.append({
-                        "estudiante": estudiante,
-                        "email": emails_data[estudiante_key],
-                        "curso": course_name,
-                        "sede": sede_nombre
-                    })
-        return result
+        @st.cache_data(ttl=900)  # 15 minutos
+        @rate_limited(calls_per_minute=55)
+        def get_all_emails_by_sede(self, sede_nombre: str) -> List[Dict[str, str]]:
+            """Obtiene todos los emails de la sede con caché y rate limiting."""
+            try:
+                sede_courses = self.load_courses_by_sede(sede_nombre)
+                emails_data, _ = self.load_emails()
+                result = []
+                for course_name, course_data in sede_courses.items():
+                    for estudiante in course_data.get("estudiantes", []):
+                        estudiante_key = estudiante.strip().lower()
+                        if estudiante_key in emails_data:
+                            result.append({
+                                "estudiante": estudiante,
+                                "email": emails_data[estudiante_key],
+                                "curso": course_name,
+                                "sede": sede_nombre
+                            })
+                return result
+            except Exception as e:
+                st.error(f"❌ Error obteniendo emails por sede: {e}")
+                return []
 
+    @st.cache_data(ttl=900)  # 15 minutos
+    @rate_limited(calls_per_minute=55)
     def get_low_attendance_students(self, sede_nombre: str, threshold: float = 70.0) -> List[Dict[str, Any]]:
-        # Usa load_courses_by_sede() y load_emails() (ambos ya optimizados)
-        sede_courses = self.load_courses_by_sede(sede_nombre)
-        low_students = []
-        for course_name, course_data in sede_courses.items():
-            total_fechas = len(course_data.get("fechas", []))
-            if total_fechas == 0:
-                continue
-            asistencias = course_data.get("asistencias", {})
-            for estudiante, att_data in asistencias.items():
-                presentes = sum(1 for estado in att_data.values() if estado)
-                porcentaje = (presentes / total_fechas) * 100 if total_fechas > 0 else 0
-                if porcentaje < threshold:
-                    emails_data, _ = self.load_emails()
-                    estudiante_key = estudiante.strip().lower()
-                    email = emails_data.get(estudiante_key)
-                    low_students.append({
-                        "estudiante": estudiante,
-                        "curso": course_name,
-                        "porcentaje": round(porcentaje, 1),
-                        "presentes": presentes,
-                        "total_clases": total_fechas,
-                        "email": email if email else "No registrado"
-                    })
-        low_students.sort(key=lambda x: x["porcentaje"])
-        return low_students
+        """Carga estudiantes con baja asistencia con caché y rate limiting."""
+        try:
+            sede_courses = self.load_courses_by_sede(sede_nombre)
+            low_students = []
+            for course_name, course_data in sede_courses.items():
+                total_fechas = len(course_data.get("fechas", []))
+                if total_fechas == 0:
+                    continue
+                asistencias = course_data.get("asistencias", {})
+                for estudiante, att_data in asistencias.items():
+                    presentes = sum(1 for estado in att_data.values() if estado)
+                    porcentaje = (presentes / total_fechas) * 100 if total_fechas > 0 else 0
+                    if porcentaje < threshold:
+                        emails_data, _ = self.load_emails()
+                        estudiante_key = estudiante.strip().lower()
+                        email = emails_data.get(estudiante_key)
+                        low_students.append({
+                            "estudiante": estudiante,
+                            "curso": course_name,
+                            "porcentaje": round(porcentaje, 1),
+                            "presentes": presentes,
+                            "total_clases": total_fechas,
+                            "email": email if email else "No registrado"
+                        })
+            low_students.sort(key=lambda x: x["porcentaje"])
+            return low_students
+        except Exception as e:
+            st.error(f"❌ Error obteniendo estudiantes con baja asistencia: {e}")
+            return []
