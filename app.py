@@ -1,5 +1,4 @@
 # app.py - Punto de entrada principal del sistema de asistencia CIMMA
-
 import streamlit as st
 
 # ============================================================================
@@ -74,101 +73,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-
 import sys
 import os
 import pandas as pd
 from datetime import datetime
 import io
-import time  # <-- AÑADIDO
-
-
-# ============================================================================
-# CLASE AuthManager LOCAL (para compatibilidad)
-# ============================================================================
-class AuthManager:
-    """
-    Clase wrapper para mantener compatibilidad con el código existente.
-    Envuelve las funciones de auth.py en una interfaz de clase.
-    """
-    
-    def __init__(self, session_timeout: int = 3600):
-        self.session_timeout = session_timeout
-    
-    def login(self, username: str, password: str, role: str) -> bool:
-        """Wrapper para authenticate_user con manejo de rol"""
-        try:
-            # Autenticar usuario
-            success = authenticate_user(username, password)
-            
-            if success:
-                # Obtener usuario y verificar rol
-                user = get_current_user()
-                if user and user.get('role', '').lower() == role.split()[0].lower():
-                    return True
-                else:
-                    # Si el rol no coincide, hacer logout
-                    logout_user()
-                    return False
-            
-            return False
-            
-        except Exception as e:
-            print(f"Error en login: {e}")
-            return False
-    
-    def check_secrets(self) -> bool:
-        """Verifica que los secrets estén configurados"""
-        try:
-            # Verificar secrets básicos
-            required_secrets = [
-                "google.credentials",
-                "google.asistencia_sheet_id", 
-                "google.clases_sheet_id"
-            ]
-            
-            for secret in required_secrets:
-                if not self._get_nested_secret(secret):
-                    return False
-            
-            return True
-            
-        except:
-            return False
-    
-    def _get_nested_secret(self, key_path: str):
-        """Obtiene un valor anidado de secrets"""
-        keys = key_path.split('.')
-        value = st.secrets
-        
-        for key in keys:
-            if key in value:
-                value = value[key]
-            else:
-                return None
-        
-        return value
-    
-    # Métodos que envuelven funciones existentes
-    def get_current_user(self):
-        return get_current_user()
-    
-    def logout_user(self):
-        return logout_user()
-    
-    def is_authenticated(self):
-        return is_authenticated()
-    
-    def require_login(self, role=None):
-        return require_login(role)
-    
-    def show_login_form(self, redirect_after_login=None):
-        return show_login_form(redirect_after_login)
-    
-    def get_all_users(self):
-        return get_all_users()
-
+import time
 
 # ============================================================================
 # CONFIGURACIÓN DE PATH E IMPORTS
@@ -201,23 +111,17 @@ try:
         get_all_users,
         check_permission
     )
-
-
-
-
-
-
     from utils.error_handler import ErrorHandler
     from utils.cache_manager import CacheManager
     
-    # Helpers - CORREGIDO: get_sede_from_username está en utils.helpers
+    # Helpers
     from utils.helpers import (
         display_footer,
         export_to_excel,
-        get_sede_from_username,  # <-- AÑADIDO
+        get_sede_from_username,
         format_porcentaje,
         get_current_datetime,
-        get_date_only,  # <-- AÑADIDO
+        get_date_only,
         create_progress_bar
     )
     
@@ -291,63 +195,42 @@ def initialize_session_state():
         "authenticated": False,
         "user": "",
         "role": "",
-        "role_type": "",
         "sede": "",
         "last_activity": datetime.now(),
         "page_views": 0,
         "debug_mode": settings.DEBUG_MODE,
-        "last_refresh": datetime.now()  # <-- AÑADIDO para auto-refresh
+        "last_refresh": datetime.now()
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
-def check_secrets_configuration(auth_manager):
+def check_secrets_configuration():
     """Verifica que los secrets estén configurados correctamente."""
-    if not auth_manager.check_secrets():
-        st.error("""
-        ✗ **Secrets no configurados correctamente**
+    try:
+        # Verificar secrets básicos
+        required_secrets = [
+            "google.credentials",
+            "google.asistencia_sheet_id", 
+            "google.clases_sheet_id"
+        ]
         
-        Por favor, configura los secrets en Streamlit Cloud:
+        for secret in required_secrets:
+            keys = secret.split('.')
+            value = st.secrets
+            for key in keys:
+                if key in value:
+                    value = value[key]
+                else:
+                    st.error(f"✗ Secret no encontrado: {secret}")
+                    return False
         
-        1. Ve a [share.streamlit.io](https://share.streamlit.io)
-        2. Selecciona tu app
-        3. Haz clic en "Settings" (engranaje)
-        4. Ve a "Secrets"
-        5. Pega el contenido de secrets.toml
+        return True
         
-        **Estructura requerida:**
-        ```toml
-        [google]
-        credentials = '{"type": "service_account", ...}'
-        asistencia_sheet_id = "tu_id_aqui"
-        clases_sheet_id = "tu_id_aqui"
-        
-        [EMAIL]
-        smtp_server = "smtp.gmail.com"
-        smtp_port = 587
-        sender_email = "tu_email@gmail.com"
-        sender_password = "tu_password"
-        
-        [usuarios_sede]
-        sp_user = "SAN PEDRO"
-        sp_admin = "SAN PEDRO"
-        chillan_user = "CHILLAN"
-        pdv_user = "PEDRO DE VALDIVIA"
-        
-        [usuarios]
-        admin = "admin123"
-        profesor1 = "clave123"
-        secretarial = "clave456"
-        
-        [APP_SETTINGS]
-        DEBUG_MODE = false
-        AUTO_REFRESH = 300
-        ```
-        """)
+    except Exception as e:
+        st.error(f"✗ Error verificando secrets: {e}")
         return False
-    return True
 
 def show_login_page():
     """Muestra la página de login."""
@@ -376,16 +259,19 @@ def show_login_page():
                 if authenticate_user(username, password):
                     user = get_current_user()
                     
-                    st.session_state.authenticated = True
-                    st.session_state.user = username
-                    st.session_state.role = user.get('role', 'user').capitalize()
-                    st.session_state.sede = user.get('sede', 'TODAS')
-                    st.session_state.page_views = 0
-                    st.session_state.last_activity = datetime.now()
-                    
-                    st.success(f"✅ ¡Bienvenido/a {username}!")
-                    time.sleep(0.5)
-                    st.rerun()
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.user = username
+                        st.session_state.role = user.get('role', 'user').capitalize()
+                        st.session_state.sede = user.get('sede', 'TODAS')
+                        st.session_state.page_views = 0
+                        st.session_state.last_activity = datetime.now()
+                        
+                        st.success(f"✅ ¡Bienvenido/a {username}!")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        ErrorHandler.handle_auth_error("Error al obtener datos del usuario")
                 else:
                     ErrorHandler.handle_auth_error("Credenciales incorrectas")
             
@@ -404,11 +290,7 @@ def show_login_page():
             
             st.markdown("</div>", unsafe_allow_html=True)
 
-
-
-
-
-def show_main_dashboard(auth_manager, sheets_manager, email_manager, apoderados_sender):
+def show_main_dashboard(sheets_manager, email_manager, apoderados_sender):
     """Muestra el dashboard principal después del login."""
     
     # Actualizar actividad
@@ -417,20 +299,21 @@ def show_main_dashboard(auth_manager, sheets_manager, email_manager, apoderados_
     
     # Renderizar sidebar
     with st.sidebar:
-        render_sidebar(auth_manager, sheets_manager)
+        render_sidebar(sheets_manager)
     
     # Renderizar contenido principal basado en rol
     try:
-        if "Profesor" in st.session_state.role:
+        role = st.session_state.get("role", "").lower()
+        
+        if "profesor" in role:
             show_profesor_dashboard(sheets_manager, email_manager, apoderados_sender)
-        elif "Equipo Sede" in st.session_state.role:
+        elif "secretaria" in role or "sede" in role:
             show_secretaria_dashboard(sheets_manager, email_manager, apoderados_sender)
-        elif "Administrador" in st.session_state.role:
+        elif "admin" in role:
             show_admin_dashboard(sheets_manager, email_manager, apoderados_sender)
         else:
-            st.warning("⚠️ Rol no reconocido. Contacte al administrador.")
+            st.warning(f"⚠️ Rol '{st.session_state.role}' no reconocido. Contacte al administrador.")
     except Exception as e:
-        # Manejar errores en los dashboards
         st.error(f"❌ Error en el dashboard: {str(e)}")
         st.info("🔄 Intente recargar la página o contacte al administrador.")
 
@@ -441,28 +324,27 @@ def main():
     initialize_session_state()
     
     # Inicializar managers con configuración
-    auth_manager = AuthManager()
     sheets_manager = GoogleSheetsManager(debug_mode=settings.DEBUG_MODE)
     email_manager = EmailManager()
     apoderados_sender = ApoderadosEmailSender()
     
     # Verificar configuración de secrets
-    if not check_secrets_configuration(auth_manager):
+    if not check_secrets_configuration():
         return
     
-    # Limpiar cache si está en modo debug - CORREGIDO
+    # Limpiar cache si está en modo debug
     if settings.DEBUG_MODE and st.session_state.page_views == 0:
         try:
-            sheets_manager.clear_cache()  # <-- SIN PARÁMETROS
+            sheets_manager.clear_cache()
             st.info("🔧 Modo debug activado - Cache limpiado")
         except Exception as e:
             st.warning(f"⚠️ No se pudo limpiar el cache: {e}")
     
     # Mostrar página de login o dashboard principal
     if not st.session_state.get("authenticated", False):
-        show_login_page(auth_manager)
+        show_login_page()
     else:
-        show_main_dashboard(auth_manager, sheets_manager, email_manager, apoderados_sender)
+        show_main_dashboard(sheets_manager, email_manager, apoderados_sender)
     
     # Footer
     display_footer()
