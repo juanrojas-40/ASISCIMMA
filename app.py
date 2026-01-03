@@ -349,7 +349,7 @@ def check_secrets_configuration(auth_manager):
         return False
     return True
 
-def show_login_page(auth_manager):
+def show_login_page():
     """Muestra la página de login."""
     render_main_header("🔄 Sistema de Asistencia CIMMA")
     
@@ -362,14 +362,6 @@ def show_login_page(auth_manager):
             <h2 style="text-align: center; color: #1A3B8F;">🔐 Iniciar Sesión</h2>
             """, unsafe_allow_html=True)
             
-            # Selector de rol
-            role = st.radio(
-                "Selecciona tu rol:",
-                ["👨‍🏫 Profesor", "👩‍💼 Equipo Sede", "👨‍💼 Administrador"],
-                horizontal=True,
-                key="login_role"
-            )
-            
             # Campos de login
             username = st.text_input("👤 Usuario", key="login_username")
             password = st.text_input("🔒 Contraseña", type="password", key="login_password")
@@ -380,41 +372,41 @@ def show_login_page(auth_manager):
                     st.error("⚠️ Por favor, completa todos los campos")
                     return
                 
-                if auth_manager.login(username, password, role):
+                # Usar authenticate_user directamente
+                if authenticate_user(username, password):
+                    user = get_current_user()
+                    
                     st.session_state.authenticated = True
                     st.session_state.user = username
-                    st.session_state.role = role
-                    st.session_state.sede = get_sede_from_username(username)  # <-- CORREGIDO
+                    st.session_state.role = user.get('role', 'user').capitalize()
+                    st.session_state.sede = user.get('sede', 'TODAS')
                     st.session_state.page_views = 0
                     st.session_state.last_activity = datetime.now()
                     
-                    # Mostrar mensaje de éxito
                     st.success(f"✅ ¡Bienvenido/a {username}!")
-                    
-                    # Pequeña pausa antes de redirigir
-                    time.sleep(0.5)  # <-- Reducido a 0.5 segundos
+                    time.sleep(0.5)
                     st.rerun()
                 else:
-                    # Usar ErrorHandler para mostrar error de autenticación
-                    try:
-                        ErrorHandler.handle_auth_error("Credenciales incorrectas o usuario no autorizado")
-                    except:
-                        # Fallback si ErrorHandler no está disponible
-                        st.error("🔐 Credenciales incorrectas o usuario no autorizado")
+                    ErrorHandler.handle_auth_error("Credenciales incorrectas")
             
-            # Información de acceso de prueba
-            with st.expander("ℹ️ Información de acceso de prueba"):
-                st.markdown("""
-                **Usuarios de prueba:**
-                
-                - 👨‍🏫 **Profesor:** `profesor1` / `clave123`
-                - 👩‍💼 **Equipo Sede SP:** `sp_user` / `clave456`
-                - 👨‍💼 **Administrador:** `admin` / `admin123`
-                
-                **Nota:** Estas credenciales son de ejemplo. En producción, usa contraseñas seguras.
-                """)
+            # Información de acceso
+            with st.expander("ℹ️ Usuarios configurados"):
+                try:
+                    usuarios = st.secrets.get("usuarios", {})
+                    if usuarios:
+                        st.write("**Usuarios disponibles:**")
+                        for user in usuarios:
+                            st.write(f"- `{user}`")
+                    else:
+                        st.warning("No hay usuarios configurados en secrets")
+                except:
+                    st.info("Configura usuarios en secrets.toml")
             
             st.markdown("</div>", unsafe_allow_html=True)
+
+
+
+
 
 def show_main_dashboard(auth_manager, sheets_manager, email_manager, apoderados_sender):
     """Muestra el dashboard principal después del login."""
