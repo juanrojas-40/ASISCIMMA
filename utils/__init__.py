@@ -3,6 +3,7 @@ from .google_sheets import GoogleSheetsManager, get_sheets_manager
 from .email_sender import EmailManager
 from .send_apoderados import ApoderadosEmailSender, get_apoderados_sender
 from .auth import AuthManager
+from .auth import require_login, get_current_user
 from .error_handler import ErrorHandler
 from .cache_manager import CacheManager, get_cache, cached_function
 from .helpers import (
