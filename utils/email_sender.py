@@ -34,35 +34,26 @@ class EmailManager:
             if not self.smtp_config:
                 return False
 
-            # Crear mensaje
             msg = MIMEMultipart('related')
             msg["From"] = self.smtp_config["sender"]
             msg["To"] = to_email
             msg["Subject"] = subject
             msg["Date"] = formatdate(localtime=True)
 
-            # Crear parte alternativa para HTML y texto plano
             msg_alternative = MIMEMultipart('alternative')
             msg.attach(msg_alternative)
 
-            # Detectar si el cuerpo es HTML
             if body.strip().startswith('<'):
-                # Es HTML - adjuntar como parte HTML
-                msg_html = MIMEText(body, 'html')
-                msg_alternative.attach(msg_html)
+                msg_alternative.attach(MIMEText(body, 'html'))
             else:
-                # Es texto plano
-                msg_text = MIMEText(body, 'plain')
-                msg_alternative.attach(msg_text)
+                msg_alternative.attach(MIMEText(body, 'plain'))
 
-            # Adjuntar logo si existe
             if logo_path and os.path.exists(logo_path):
                 try:
                     with open(logo_path, 'rb') as f:
                         logo_data = f.read()
                     logo = MIMEImage(logo_data)
                     logo.add_header('Content-ID', '<logo_institucion>')
-                    logo.add_header('Content-Disposition', 'inline', filename='LOGO.gif')
                     msg.attach(logo)
                 except Exception as e:
                     st.warning(f"⚠️ No se pudo adjuntar el logo: {e}")
@@ -88,7 +79,6 @@ class EmailManager:
         color = "#28a745" if presente else "#dc3545"
         estado_icono = "✅" if presente else "❌"
 
-        # Construir el cuerpo del email en HTML
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -244,7 +234,29 @@ class EmailManager:
         subject = f"Reporte de Asistencia - {estudiante} - {curso} - {fecha}"
         return subject, html
 
-    def send_attendance_emails(self, curso: str, fecha: str, attendance_data: Dict[str, bool]) -> Dict[str, Any]:
+    def send_attendance_emails(self, 
+                              curso: str, 
+                              fecha: str, 
+                              attendance_data: Dict[str, bool],
+                              student_stats: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Envía emails de asistencia usando datos precalculados.
+        
+        Args:
+            curso: Nombre del curso.
+            fecha: Fecha de la asistencia.
+            attendance_data: Dict con el estado de asistencia del día.
+            student_stats: Dict con las estadísticas acumuladas por estudiante.
+                Ej: {
+                    "juan perez": {
+                        "porcentaje_asistencia": 85.5,
+                        "total_clases": 20,
+                        "presentes": 17,
+                        "ausentes": 3,
+                        "recomendaciones": "¡Excelente asistencia!"
+                    }
+                }
+        """
         from .google_sheets import GoogleSheetsManager
         sheets_manager = GoogleSheetsManager()
         emails, nombres_apoderados = sheets_manager.load_emails()
@@ -263,19 +275,13 @@ class EmailManager:
                 apoderado = nombres_apoderados.get(estudiante_key, "Apoderado/a")
                 email_destino = emails[estudiante_key]
 
-                # Calcular estadísticas de asistencia (esto es un ejemplo, debes ajustarlo según tus datos reales)
-                # Aquí deberías obtener el total de clases, presentes y ausentes del estudiante para este curso.
-                # Para este ejemplo, asumimos que tienes esta lógica en otro lugar.
-                total_clases = 10  # Ejemplo, reemplaza con tu lógica real
-                presentes = 8 if presente else 7  # Ejemplo
-                ausentes = total_clases - presentes
-                porcentaje_asistencia = (presentes / total_clases * 100) if total_clases > 0 else 0
-
-                # Generar recomendaciones (ajusta según tus reglas)
-                if porcentaje_asistencia < 70:
-                    recomendaciones = "Le recomendamos mejorar la asistencia para un mejor rendimiento académico."
-                else:
-                    recomendaciones = "¡Sigue así! Su asistencia es excelente."
+                # Obtener estadísticas desde el argumento (no se calculan aquí)
+                stats = student_stats.get(estudiante_key, {})
+                porcentaje_asistencia = stats.get("porcentaje_asistencia", 0.0)
+                total_clases = stats.get("total_clases", 0)
+                presentes = stats.get("presentes", 0)
+                ausentes = stats.get("ausentes", 0)
+                recomendaciones = stats.get("recomendaciones", "")
 
                 subject, html_content = self.create_attendance_email(
                     apoderado, estudiante, curso, fecha, presente,
@@ -328,14 +334,12 @@ class EmailManager:
                     })
                     continue
 
-                # Personalizar mensaje
                 personalized_body = body_template
                 for key, value in destino.items():
                     placeholder = f"{{{key}}}"
                     if placeholder in personalized_body:
                         personalized_body = personalized_body.replace(placeholder, str(value) if value else "")
 
-                # Enviar
                 if self.send_email(email_destino, subject, personalized_body, logo_path="LOGO.png"):
                     results["sent"] += 1
                     results["details"].append({
@@ -359,11 +363,9 @@ class EmailManager:
                     "status": f"❌ Error: {str(e)[:60]}"
                 })
 
-            # Throttling (solo si no es el último)
             if i < len(destinatarios) - 1:
                 time.sleep(delay)
 
-            # Actualizar progreso
             if progress_bar:
                 progress = (i + 1) / len(destinatarios)
                 progress_bar.progress(progress)
